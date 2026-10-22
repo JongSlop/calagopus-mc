@@ -1,7 +1,14 @@
-import { faDownload, faMagnifyingGlass, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import {
+  faClockRotateLeft,
+  faCodeBranch,
+  faDownload,
+  faMagnifyingGlass,
+  faTrashCan,
+} from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { ActionIcon, Alert, Badge, Image, Loader, Select, Switch, Table } from '@mantine/core';
 import { useEffect, useState } from 'react';
+import { Modal } from '@mantine/core';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
 import TitleCard from '@/elements/data-display/TitleCard.tsx';
@@ -25,6 +32,8 @@ interface InstalledMod {
   filename: string;
   target: Target;
   pinned: boolean;
+  previous_version: string | null;
+  previous_version_id: string | null;
 }
 
 interface Detection {
@@ -35,6 +44,8 @@ interface Detection {
 interface ModsResponse {
   detection: Detection;
   auto_update: boolean;
+  auto_update_interval_hours: number;
+  auto_update_last_run: string | null;
   mods: InstalledMod[];
 }
 
@@ -48,6 +59,12 @@ interface UpdateAvailable {
   target: Target;
   current: string;
   latest: string;
+}
+
+interface VersionOption {
+  id: string;
+  version_number: string;
+  filename: string | null;
 }
 
 interface SearchHit {
@@ -72,6 +89,8 @@ export default function ModsPage() {
 
   const [mods, setMods] = useState<InstalledMod[]>([]);
   const [autoUpdate, setAutoUpdate] = useState(false);
+  const [intervalHours, setIntervalHours] = useState(6);
+  const [lastRun, setLastRun] = useState<string | null>(null);
   const [updates, setUpdates] = useState<UpdateAvailable[] | null>(null);
   const [loader, setLoader] = useState<Loader | null>(null);
   const [mcVersion, setMcVersion] = useState('');
@@ -83,9 +102,20 @@ export default function ModsPage() {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searchTarget, setSearchTarget] = useState<Record<string, Target>>({});
 
+  const [picker, setPicker] = useState<{
+    projectId: string;
+    title: string;
+    provider: Provider;
+    target: Target;
+  } | null>(null);
+  const [pickerVersions, setPickerVersions] = useState<VersionOption[] | null>(null);
+  const [pickedVersion, setPickedVersion] = useState<string | null>(null);
+
   const apply = (data: ModsResponse) => {
     setMods(data.mods);
     setAutoUpdate(data.auto_update);
+    setIntervalHours(data.auto_update_interval_hours);
+    setLastRun(data.auto_update_last_run);
     setLoader(data.detection.loader);
     setMcVersion(data.detection.mc_version ?? '');
   };
@@ -100,6 +130,12 @@ export default function ModsPage() {
       .then(({ data }) => apply(data))
       .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
       .finally(() => setLoading(false));
+
+    // Checked on open, so updates show up without pressing a button.
+    axiosInstance
+      .get<UpdateAvailable[]>(`${endpoint(serverUuid)}/updates`)
+      .then(({ data }) => setUpdates(data))
+      .catch(() => setUpdates(null));
   }, [serverUuid]);
 
   const saveDetection = () => {
@@ -121,6 +157,50 @@ export default function ModsPage() {
       .then(({ data }) => {
         setHits(data);
         setSearchTarget(Object.fromEntries(data.map((hit) => [hit.project_id, hit.suggested_target])));
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const openPicker = (projectId: string, title: string, provider: Provider, target: Target) => {
+    setPicker({ projectId, title, provider, target });
+    setPickerVersions(null);
+    setPickedVersion(null);
+    setBusy(true);
+    axiosInstance
+      .get<VersionOption[]>(`${endpoint(serverUuid)}/versions/${projectId}`, { params: { provider } })
+      .then(({ data }) => setPickerVersions(data))
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const installVersion = () => {
+    if (!picker || !pickedVersion) return;
+
+    setBusy(true);
+    axiosInstance
+      .post<ModsResponse>(`${endpoint(serverUuid)}/install`, {
+        project_id: picker.projectId,
+        version_id: pickedVersion,
+        target: picker.target,
+        provider: picker.provider,
+      })
+      .then(({ data }) => {
+        apply(data);
+        setPicker(null);
+        addToast(`${picker.title} installed to ${targetLabel(picker.target)}.`, 'success');
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const revert = (mod: InstalledMod) => {
+    setBusy(true);
+    axiosInstance
+      .post<ModsResponse>(`${endpoint(serverUuid)}/revert`, { project_id: mod.project_id, target: mod.target })
+      .then(({ data }) => {
+        apply(data);
+        addToast(`${mod.project_name} rolled back.`, 'success');
       })
       .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
       .finally(() => setBusy(false));
@@ -167,10 +247,10 @@ export default function ModsPage() {
       .finally(() => setBusy(false));
   };
 
-  const setAutoUpdateFlag = (enabled: boolean) => {
+  const setAutoUpdateFlag = (enabled: boolean, hours = intervalHours) => {
     setBusy(true);
     axiosInstance
-      .post<ModsResponse>(`${endpoint(serverUuid)}/auto-update`, { enabled })
+      .post<ModsResponse>(`${endpoint(serverUuid)}/auto-update`, { enabled, interval_hours: hours })
       .then(({ data }) => {
         apply(data);
         addToast(enabled ? 'Auto update enabled.' : 'Auto update disabled.', 'success');
@@ -241,10 +321,31 @@ export default function ModsPage() {
               checked={autoUpdate}
               onChange={(event) => setAutoUpdateFlag(event.currentTarget.checked)}
             />
+            <Select
+              label='Every'
+              w={140}
+              data={[
+                { value: '1', label: 'hour' },
+                { value: '6', label: '6 hours' },
+                { value: '12', label: '12 hours' },
+                { value: '24', label: 'day' },
+                { value: '72', label: '3 days' },
+                { value: '168', label: 'week' },
+              ]}
+              value={String(intervalHours)}
+              onChange={(value) => value && setAutoUpdateFlag(autoUpdate, Number(value))}
+              disabled={!autoUpdate}
+            />
+            {lastRun && (
+              <small style={{ marginTop: 26 }}>last run {new Date(lastRun).toLocaleString()}</small>
+            )}
           </Group>
         </TitleCard>
 
-        <TitleCard title='Installed mods'>
+        <TitleCard
+          title='Installed mods'
+          leftSection={updates !== null && updates.length > 0 ? <Badge color='blue'>{updates.length} updates</Badge> : undefined}
+        >
           {loading ? (
             <Loader />
           ) : mods.length === 0 ? (
@@ -266,6 +367,13 @@ export default function ModsPage() {
                     <Table.Td>{mod.project_name}</Table.Td>
                     <Table.Td>
                       <code>{mod.version_name}</code>
+                      {mod.previous_version && (
+                        <div>
+                          <small>
+                            <FontAwesomeIcon icon={faClockRotateLeft} /> {mod.previous_version}
+                          </small>
+                        </div>
+                      )}
                     </Table.Td>
                     <Table.Td>
                       <Badge variant='light'>{targetLabel(mod.target)}</Badge>
@@ -280,6 +388,20 @@ export default function ModsPage() {
                             {updateFor(mod)?.latest}
                           </Button>
                         )}
+                        {mod.previous_version_id && (
+                          <Button size='xs' variant='default' onClick={() => revert(mod)}>
+                            {`Revert to ${mod.previous_version}`}
+                          </Button>
+                        )}
+                        <ActionIcon
+                          variant='subtle'
+                          aria-label='Choose version'
+                          onClick={() =>
+                            openPicker(mod.project_id, mod.project_name, mod.provider as Provider, mod.target)
+                          }
+                        >
+                          <FontAwesomeIcon icon={faCodeBranch} />
+                        </ActionIcon>
                         <ActionIcon color='red' variant='subtle' onClick={() => uninstall(mod)}>
                           <FontAwesomeIcon icon={faTrashCan} />
                         </ActionIcon>
@@ -363,6 +485,19 @@ export default function ModsPage() {
                   }
                 />
                 <Button
+                  variant='default'
+                  onClick={() =>
+                    openPicker(
+                      hit.project_id,
+                      hit.title,
+                      provider,
+                      searchTarget[hit.project_id] ?? hit.suggested_target,
+                    )
+                  }
+                >
+                  Version
+                </Button>
+                <Button
                   onClick={() => install(hit)}
                   loading={busy}
                   leftSection={<FontAwesomeIcon icon={faDownload} />}
@@ -374,6 +509,39 @@ export default function ModsPage() {
           </Stack>
         </TitleCard>
       </Stack>
+
+      <Modal opened={!!picker} onClose={() => setPicker(null)} title={`Version of ${picker?.title ?? ''}`}>
+        {pickerVersions === null ? (
+          <Loader />
+        ) : pickerVersions.length === 0 ? (
+          <p>This mod has no version for the detected loader and Minecraft version.</p>
+        ) : (
+          <Stack>
+            <Select
+              label='Version'
+              placeholder='Pick a version'
+              searchable
+              data={pickerVersions.map((version) => ({
+                value: version.id,
+                label: version.filename ?? version.version_number,
+              }))}
+              value={pickedVersion}
+              onChange={setPickedVersion}
+            />
+            <small>
+              Installing a specific version does not pin it. Use the pin switch afterwards if it should stay.
+            </small>
+            <Group justify='flex-end'>
+              <Button variant='default' onClick={() => setPicker(null)}>
+                Cancel
+              </Button>
+              <Button onClick={installVersion} loading={busy} disabled={!pickedVersion}>
+                Install
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
     </ServerContentContainer>
   );
 }

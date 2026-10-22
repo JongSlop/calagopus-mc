@@ -45,6 +45,9 @@ pub struct Dependency {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Version {
     pub id: String,
+    /// Canonical Modrinth project id, so a slug and an id resolve to the same mod.
+    #[serde(default)]
+    pub project_id: String,
     pub name: String,
     pub version_number: String,
     pub game_versions: Vec<String>,

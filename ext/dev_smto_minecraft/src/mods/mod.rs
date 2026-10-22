@@ -65,6 +65,19 @@ pub struct InstalledMod {
     pub sha512: Option<String>,
     #[serde(default)]
     pub updated: Option<String>,
+    /// The version that was replaced by the last install, so it can be restored.
+    #[serde(default)]
+    pub previous: Option<PreviousVersion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreviousVersion {
+    pub version_id: String,
+    pub version_name: String,
+}
+
+fn default_interval_hours() -> u32 {
+    6
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,6 +93,11 @@ pub struct Manifest {
     /// Opt-in per server: the cron task updates unpinned mods while the server is offline.
     #[serde(default)]
     pub auto_update: bool,
+    /// How many hours have to pass between two auto update runs.
+    #[serde(default = "default_interval_hours")]
+    pub auto_update_interval_hours: u32,
+    #[serde(default)]
+    pub auto_update_last_run: Option<String>,
     #[serde(default)]
     pub mods: Vec<InstalledMod>,
 }
@@ -163,6 +181,21 @@ pub struct DirEntry {
     pub directory: bool,
 }
 
+/// NeoForge versions its jars after the Minecraft version, but only from 1.20.2 on:
+/// `21.1.72` is Minecraft 1.21.1, `20.4.237` is 1.20.4. The 1.20.1 line predates the
+/// rename and kept Forge-style numbers, where `47` stands for 1.20.1.
+fn neoforge_mc_version(version: &str) -> Option<String> {
+    let mut parts = version.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor: u32 = parts.next()?.parse().ok()?;
+
+    match major {
+        47 => Some("1.20.1".to_string()),
+        20..=99 => Some(format!("1.{major}.{minor}")),
+        _ => None,
+    }
+}
+
 /// Works out loader and Minecraft version from the files on disk. Anything it cannot
 /// see can be overridden by the user and is stored in the manifest.
 pub fn detect(entries: &[DirEntry]) -> Detection {
@@ -196,20 +229,28 @@ pub fn detect(entries: &[DirEntry]) -> Detection {
 
         if name.starts_with("forge-") || name.starts_with("neoforge-") {
             // forge-1.21.1-52.0.1.jar / neoforge-21.1.72.jar
+            let neoforge = name.starts_with("neoforge-");
+
             detection
                 .loader
-                .get_or_insert(if name.starts_with("neoforge-") {
+                .get_or_insert(if neoforge {
                     Loader::NeoForge
                 } else {
                     Loader::Forge
                 });
 
-            if let Some(version) = name
-                .split('-')
-                .nth(1)
-                .filter(|version| version.starts_with("1."))
-            {
-                detection.mc_version.get_or_insert_with(|| version.to_string());
+            if let Some(version) = name.split('-').nth(1) {
+                let mc_version = if neoforge {
+                    neoforge_mc_version(version)
+                } else {
+                    version
+                        .starts_with("1.")
+                        .then(|| version.to_string())
+                };
+
+                if let Some(mc_version) = mc_version {
+                    detection.mc_version.get_or_insert(mc_version);
+                }
             }
         }
     }
@@ -243,7 +284,23 @@ mod tests {
 
         let neoforge = detect(&[file("neoforge-21.1.72.jar")]);
         assert_eq!(neoforge.loader, Some(Loader::NeoForge));
-        assert_eq!(neoforge.mc_version, None);
+        assert_eq!(neoforge.mc_version.as_deref(), Some("1.21.1"));
+    }
+
+    #[test]
+    fn maps_neoforge_versions_to_minecraft() {
+        let modern = detect(&[file("neoforge-21.1.72.jar")]);
+        assert_eq!(modern.mc_version.as_deref(), Some("1.21.1"), "21.1 is 1.21.1");
+
+        let older = detect(&[file("neoforge-20.4.237.jar")]);
+        assert_eq!(older.mc_version.as_deref(), Some("1.20.4"), "20.4 is 1.20.4");
+
+        // The 1.20.1 line kept Forge numbering, where 47 means 1.20.1.
+        let legacy = detect(&[file("neoforge-47.1.106-universal.jar")]);
+        assert_eq!(legacy.loader, Some(Loader::NeoForge));
+        assert_eq!(legacy.mc_version.as_deref(), Some("1.20.1"));
+
+        assert_eq!(neoforge_mc_version("19.0.1"), None, "unmapped must stay unknown");
     }
 
     #[test]
@@ -272,6 +329,7 @@ mod tests {
             pinned: false,
             sha512: None,
             updated: None,
+            previous: None,
         };
 
         manifest.upsert(entry.clone());

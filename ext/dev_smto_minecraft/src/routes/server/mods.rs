@@ -30,6 +30,9 @@ pub struct InstalledModResponse {
     pub pinned: bool,
     pub sha512: Option<String>,
     pub updated: Option<String>,
+    pub previous_version: Option<String>,
+    /// Version id that `/revert` would install, so the UI can label the button.
+    pub previous_version_id: Option<String>,
 }
 
 impl From<&InstalledMod> for InstalledModResponse {
@@ -45,6 +48,14 @@ impl From<&InstalledMod> for InstalledModResponse {
             pinned: entry.pinned,
             sha512: entry.sha512.clone(),
             updated: entry.updated.clone(),
+            previous_version: entry
+                .previous
+                .as_ref()
+                .map(|previous| previous.version_name.clone()),
+            previous_version_id: entry
+                .previous
+                .as_ref()
+                .map(|previous| previous.version_id.clone()),
         }
     }
 }
@@ -59,6 +70,8 @@ pub struct DetectionResponse {
 pub struct ModsResponse {
     pub detection: DetectionResponse,
     pub auto_update: bool,
+    pub auto_update_interval_hours: u32,
+    pub auto_update_last_run: Option<String>,
     pub mods: Vec<InstalledModResponse>,
 }
 
@@ -70,6 +83,8 @@ impl ModsResponse {
                 mc_version: manifest.detection.mc_version.clone(),
             },
             auto_update: manifest.auto_update,
+            auto_update_interval_hours: manifest.auto_update_interval_hours,
+            auto_update_last_run: manifest.auto_update_last_run.clone(),
             mods: manifest.mods.iter().map(Into::into).collect(),
         }
     }
@@ -759,6 +774,8 @@ pub async fn update(
 #[derive(ToSchema, Deserialize)]
 pub struct AutoUpdateRequest {
     pub enabled: bool,
+    /// Hours between two runs, 1 to 720. Left out keeps the current value.
+    pub interval_hours: Option<u32>,
 }
 
 #[utoipa::path(post, path = "/auto-update", request_body = AutoUpdateRequest, responses(
@@ -782,7 +799,65 @@ pub async fn set_auto_update(
 
     let mut manifest = read_manifest(&state, &server.0).await?;
     manifest.auto_update = data.enabled;
+
+    if let Some(hours) = data.interval_hours {
+        if !(1..=720).contains(&hours) {
+            return ApiResponse::error("interval must be between 1 and 720 hours").ok();
+        }
+
+        manifest.auto_update_interval_hours = hours;
+    }
+
     write_manifest(&state, &server.0, &manifest).await?;
+
+    ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
+}
+
+#[derive(ToSchema, Deserialize)]
+pub struct RevertRequest {
+    pub project_id: String,
+    pub target: Target,
+}
+
+#[utoipa::path(post, path = "/revert", request_body = RevertRequest, responses(
+    (status = OK, body = inline(ModsResponse)),
+    (status = UNAUTHORIZED, body = ApiError),
+    (status = FORBIDDEN, body = ApiError),
+    (status = BAD_REQUEST, body = ApiError),
+    (status = BAD_GATEWAY, body = ApiError),
+), params(
+    (
+        "server" = uuid::Uuid,
+        description = "The server ID",
+        example = "123e4567-e89b-12d3-a456-426614174000",
+    ),
+))]
+pub async fn revert(
+    state: GetState,
+    permissions: GetPermissionManager,
+    server: GetServer,
+    activity_logger: GetServerActivityLogger,
+    axum::Json(data): axum::Json<RevertRequest>,
+) -> ApiResponseResult {
+    permissions.has_server_permission("minecraft-mods.update")?;
+
+    let mut manifest = read_manifest(&state, &server.0).await?;
+    let entry = manager::revert_one(&state, &server, &mut manifest, &data.project_id, data.target)
+        .await
+        .map_err(|err| ApiResponse::error(err.to_string()))?;
+
+    write_manifest(&state, &server.0, &manifest).await?;
+
+    activity_logger
+        .log(
+            "server:dev.smto.minecraft.mods.revert",
+            serde_json::json!({
+                "project_id": data.project_id,
+                "version_id": entry.version_id,
+                "file": entry.filename,
+            }),
+        )
+        .await;
 
     ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
 }
@@ -799,5 +874,6 @@ pub fn router(state: &shared::State) -> OpenApiRouter<shared::State> {
         .routes(routes!(pin))
         .routes(routes!(update))
         .routes(routes!(set_auto_update))
+        .routes(routes!(revert))
         .with_state(state.clone())
 }

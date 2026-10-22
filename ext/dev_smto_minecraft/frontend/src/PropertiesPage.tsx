@@ -1,11 +1,12 @@
 import { faFloppyDisk, faPlus, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { ActionIcon, Alert, Loader, Table } from '@mantine/core';
+import { ActionIcon, Alert, Loader, SegmentedControl, Table } from '@mantine/core';
 import { useEffect, useState } from 'react';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
 import TitleCard from '@/elements/data-display/TitleCard.tsx';
 import NumberInput from '@/elements/input/NumberInput.tsx';
+import TextArea from '@/elements/input/TextArea.tsx';
 import Switch from '@/elements/input/Switch.tsx';
 import TextInput from '@/elements/input/TextInput.tsx';
 import Group from '@/elements/layout/Group.tsx';
@@ -73,6 +74,9 @@ export default function PropertiesPage() {
   const [original, setOriginal] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [mode, setMode] = useState<'table' | 'raw'>('table');
+  const [raw, setRaw] = useState('');
 
   useEffect(() => {
     setLoading(true);
@@ -81,10 +85,25 @@ export default function PropertiesPage() {
       .then(({ data }) => {
         setRows(toRows(data.entries));
         setOriginal(Object.fromEntries(data.entries.map((entry) => [entry.key, entry.value])));
+        setRaw(data.content);
       })
       .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
       .finally(() => setLoading(false));
   }, [serverUuid]);
+
+  const saveRaw = () => {
+    setSaving(true);
+    axiosInstance
+      .put<PropertiesResponse>(`${endpoint(serverUuid)}/raw`, { content: raw })
+      .then(({ data }) => {
+        setRows(toRows(data.entries));
+        setOriginal(Object.fromEntries(data.entries.map((entry) => [entry.key, entry.value])));
+        setRaw(data.content);
+        addToast('server.properties saved.', 'success');
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setSaving(false));
+  };
 
   const updateRow = (id: number, patch: Partial<PropertyEntry>) => {
     setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -121,11 +140,21 @@ export default function PropertiesPage() {
       .finally(() => setSaving(false));
   };
 
+  const needle = filter.trim().toLowerCase();
+  const visible = rows.filter(
+    (row) => !needle || row.key.toLowerCase().includes(needle) || row.value.toLowerCase().includes(needle),
+  );
+
   return (
     <ServerContentContainer
       title='server.properties'
       contentRight={
-        <Button onClick={save} loading={saving} disabled={loading} leftSection={<FontAwesomeIcon icon={faFloppyDisk} />}>
+        <Button
+          onClick={mode === 'raw' ? saveRaw : save}
+          loading={saving}
+          disabled={loading}
+          leftSection={<FontAwesomeIcon icon={faFloppyDisk} />}
+        >
           Save
         </Button>
       }
@@ -137,13 +166,35 @@ export default function PropertiesPage() {
         </Alert>
       )}
 
-      <TitleCard title='Properties'>
+      <TitleCard
+        title='Properties'
+        rightSection={
+          <SegmentedControl
+            size='xs'
+            value={mode}
+            onChange={(value) => setMode(value as 'table' | 'raw')}
+            data={[
+              { value: 'table', label: 'Form' },
+              { value: 'raw', label: 'Raw file' },
+            ]}
+          />
+        }
+      >
         {loading ? (
           <Loader />
+        ) : mode === 'raw' ? (
+          <TextArea
+            autosize
+            minRows={20}
+            maxRows={40}
+            styles={{ input: { fontFamily: 'monospace' } }}
+            value={raw}
+            onChange={(event) => setRaw(event.currentTarget.value)}
+          />
         ) : (
           <Table>
             <Table.Tbody>
-              {rows.map((row) => (
+              {visible.map((row) => (
                 <Table.Tr key={row.id}>
                   <Table.Td w='40%'>
                     <TextInput
@@ -165,14 +216,26 @@ export default function PropertiesPage() {
           </Table>
         )}
 
-        <Button
-          mt='md'
-          variant='default'
-          onClick={() => setRows((current) => [...current, { id: nextRowId++, key: '', value: '' }])}
-          leftSection={<FontAwesomeIcon icon={faPlus} />}
-        >
-          Add property
-        </Button>
+        {mode === 'table' && (
+          <>
+            <Group mt='md' justify='space-between'>
+              <TextInput
+                w={280}
+                placeholder='Filter keys'
+                value={filter}
+                onChange={(event) => setFilter(event.currentTarget.value)}
+              />
+              <Button
+                variant='default'
+                onClick={() => setRows((current) => [...current, { id: nextRowId++, key: '', value: '' }])}
+                leftSection={<FontAwesomeIcon icon={faPlus} />}
+              >
+                Add property
+              </Button>
+            </Group>
+            {visible.length === 0 && <p>No key matches the filter.</p>}
+          </>
+        )}
       </TitleCard>
     </ServerContentContainer>
   );

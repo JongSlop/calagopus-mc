@@ -1,6 +1,6 @@
 import { faFloppyDisk, faTrashCan, faUserPlus } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { ActionIcon, Alert, Loader, Table } from '@mantine/core';
+import { ActionIcon, Alert, Loader, Switch, Table } from '@mantine/core';
 import { useEffect, useState } from 'react';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
@@ -23,8 +23,6 @@ interface WhitelistResponse {
 }
 
 const endpoint = (serverUuid: string) => `/api/client/servers/${serverUuid}/dev.smto.minecraft/whitelist`;
-const propertiesEndpoint = (serverUuid: string) =>
-  `/api/client/servers/${serverUuid}/dev.smto.minecraft/properties`;
 
 export default function WhitelistPage() {
   const serverUuid = useServerStore((state) => state.server.uuid);
@@ -67,10 +65,13 @@ export default function WhitelistPage() {
     setEntries((current) => current.filter((entry) => entry.name !== name));
   };
 
-  const save = () => {
+  const save = (enforcedOverride?: boolean) => {
     setSaving(true);
     axiosInstance
-      .put<WhitelistResponse>(endpoint(serverUuid), { entries })
+      .put<WhitelistResponse>(endpoint(serverUuid), {
+        entries,
+        enforced: enforcedOverride ?? enforced,
+      })
       .then(({ data }) => {
         setEntries(data.entries);
         setEnforced(data.enforced);
@@ -81,40 +82,37 @@ export default function WhitelistPage() {
       .finally(() => setSaving(false));
   };
 
-  const enableWhitelist = () => {
-    setSaving(true);
-    axiosInstance
-      .put(propertiesEndpoint(serverUuid), { edits: [{ key: 'white-list', value: 'true' }] })
-      .then(() => {
-        setEnforced(true);
-        addToast('white-list is now enabled in server.properties.', 'success');
-      })
-      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
-      .finally(() => setSaving(false));
-  };
-
   return (
     <ServerContentContainer
       title='Whitelist'
       contentRight={
-        <Button onClick={save} loading={saving} disabled={loading} leftSection={<FontAwesomeIcon icon={faFloppyDisk} />}>
+        <Button
+          onClick={() => save()}
+          loading={saving}
+          disabled={loading}
+          leftSection={<FontAwesomeIcon icon={faFloppyDisk} />}
+        >
           Save
         </Button>
       }
     >
-      {!enforced && (
-        <Alert
-          color='yellow'
-          mb='md'
-          title='The whitelist is not enabled'
-          styles={{ message: { display: 'flex', alignItems: 'center', gap: '1rem' } }}
-        >
-          <span>Minecraft only enforces this list while white-list=true is set in server.properties.</span>
-          <Button variant='light' size='xs' onClick={enableWhitelist} loading={saving}>
-            Enable whitelist
-          </Button>
-        </Alert>
-      )}
+      <Alert
+        color={enforced ? 'green' : 'yellow'}
+        mb='md'
+        styles={{ message: { display: 'flex', alignItems: 'center', gap: '1rem' } }}
+      >
+        <Switch
+          label='Enforce whitelist'
+          description='Writes white-list in server.properties. Without it Minecraft lets everyone in, listed or not.'
+          checked={enforced}
+          onChange={(event) => {
+            const next = event.currentTarget.checked;
+            setEnforced(next);
+            save(next);
+          }}
+          disabled={saving}
+        />
+      </Alert>
 
       <Alert color='blue' mb='md' variant='light'>
         {onlineMode

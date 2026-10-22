@@ -9,7 +9,9 @@ use shared::{
 use tracing::{info, warn};
 
 use crate::{
-    mods::{InstalledMod, Loader, MANIFEST_FILE, Manifest, Target, curseforge, modrinth},
+    mods::{
+        InstalledMod, Loader, MANIFEST_FILE, Manifest, PreviousVersion, Target, curseforge, modrinth,
+    },
     server_file,
 };
 
@@ -54,6 +56,9 @@ pub struct UpdateAvailable {
 
 /// A mod file resolved from a provider, ready to be downloaded.
 struct ResolvedFile {
+    /// Canonical provider project id. Differs from what the caller passed when a slug
+    /// or a non-canonical form was used, and lets one mod never be tracked twice.
+    project_id: String,
     url: String,
     filename: String,
     version_name: String,
@@ -112,6 +117,11 @@ async fn resolve(
                 .collect();
 
             Ok(ResolvedFile {
+                project_id: if version.project_id.is_empty() {
+                    project_id.to_string()
+                } else {
+                    version.project_id
+                },
                 url: file.url,
                 filename: file.filename,
                 version_name: version.version_number,
@@ -157,6 +167,7 @@ async fn resolve(
                 .collect();
 
             Ok(ResolvedFile {
+                project_id: file.mod_id.to_string(),
                 url,
                 filename: file.file_name,
                 version_name: file.display_name,
@@ -219,7 +230,16 @@ pub async fn install_one(
         ensure_client_dir(state, server).await?;
     }
 
-    let previous = manifest.find(project_id, target).cloned();
+    // The same mod can be referenced by slug or by id; normally only one canonical id is
+    // ever stored, so match both forms and retire the stale entry below.
+    let previous = manifest
+        .mods
+        .iter()
+        .find(|entry| {
+            entry.target == target
+                && (entry.project_id == project_id || entry.project_id == resolved.project_id)
+        })
+        .cloned();
     let path = format!("{target_dir}/{}", resolved.filename);
 
     let temp_path = format!("{target_dir}/.smto-{}.tmp", uuid::Uuid::new_v4());
@@ -246,9 +266,19 @@ pub async fn install_one(
         None => project_name_for(state, provider, project_id).await,
     };
 
+    // Remember the version this one replaces, so a single click can go back. Installing
+    // the same version again is not a change worth remembering.
+    let previous_version = previous.as_ref().and_then(|entry| {
+        (entry.version_id != resolved.version_id).then(|| PreviousVersion {
+            version_id: entry.version_id.clone(),
+            version_name: entry.version_name.clone(),
+        })
+    });
+
+    let stored_id = resolved.project_id.clone();
     let entry = InstalledMod {
         provider: provider.as_str().to_string(),
-        project_id: project_id.to_string(),
+        project_id: stored_id.clone(),
         project_name,
         version_id: resolved.version_id,
         version_name: resolved.version_name,
@@ -258,7 +288,15 @@ pub async fn install_one(
         pinned: previous.as_ref().map(|entry| entry.pinned).unwrap_or(false),
         sha512: Some(sha512),
         updated: Some(chrono::Utc::now().to_rfc3339()),
+        previous: previous_version,
     };
+
+    // Drop the entry under the other id form so the mod is only tracked once.
+    if let Some(previous) = &previous
+        && previous.project_id != stored_id
+    {
+        manifest.remove(&previous.project_id, target);
+    }
 
     manifest.upsert(entry.clone());
 
@@ -366,6 +404,39 @@ pub async fn update_one(
     }))
 }
 
+/// Puts the previously installed version back and keeps the one we came from as the new
+/// "previous", so the two versions can be swapped back and forth.
+pub async fn revert_one(
+    state: &State,
+    server: &Server,
+    manifest: &mut Manifest,
+    project_id: &str,
+    target: Target,
+) -> anyhow::Result<InstalledMod> {
+    let Some(current) = manifest.find(project_id, target).cloned() else {
+        anyhow::bail!("this mod is not managed by the extension");
+    };
+
+    let Some(previous) = current.previous.clone() else {
+        anyhow::bail!("there is no earlier version to go back to");
+    };
+
+    // install_one already records the version it replaced as the new "previous", which is
+    // exactly the one we just reverted from.
+    let entry = install_one(
+        state,
+        server,
+        manifest,
+        provider_of(&current),
+        project_id,
+        Some(&previous.version_id),
+        target,
+    )
+    .await?;
+
+    Ok(entry)
+}
+
 /// Lists managed mods that have a newer compatible version. Pinned mods are skipped.
 pub async fn check_updates(
     state: &State,
@@ -435,6 +506,18 @@ pub async fn update_all(
     Ok(reports)
 }
 
+/// Whether a server is due for an auto update run. A missing or unreadable timestamp
+/// counts as due, so a fresh server is not stuck waiting.
+fn is_due(last_run: Option<&str>, interval_hours: u32) -> bool {
+    let Some(last) = last_run.and_then(|last| chrono::DateTime::parse_from_rfc3339(last).ok()) else {
+        return true;
+    };
+
+    let every = chrono::Duration::hours(i64::from(interval_hours.max(1)));
+
+    chrono::Utc::now().signed_duration_since(last) >= every
+}
+
 /// One auto-update pass over every server. Runs from the cron task, so it must not
 /// assume a request context.
 pub async fn auto_update_pass(state: &State) -> anyhow::Result<()> {
@@ -465,6 +548,11 @@ pub async fn auto_update_pass(state: &State) -> anyhow::Result<()> {
             continue;
         }
 
+        // The cron task wakes up hourly; each server decides how often it actually runs.
+        if !is_due(manifest.auto_update_last_run.as_deref(), manifest.auto_update_interval_hours) {
+            continue;
+        }
+
         // Jars are only ever touched while the server is stopped, so a running
         // server never sees a swapped jar and AutoModpack never serves a half one.
         let node = server.node.fetch_cached(&state.database).await?;
@@ -485,11 +573,14 @@ pub async fn auto_update_pass(state: &State) -> anyhow::Result<()> {
         let mut manifest = manifest;
         let reports = update_all(state, &server, &mut manifest).await?;
 
+        // Stamp the run even when nothing changed, otherwise the interval would never
+        // advance and every wake up would hit the providers again.
+        manifest.auto_update_last_run = Some(chrono::Utc::now().to_rfc3339());
+        server_file::write(state, &server, MANIFEST_FILE, manifest.render()).await?;
+
         if reports.is_empty() {
             continue;
         }
-
-        server_file::write(state, &server, MANIFEST_FILE, manifest.render()).await?;
 
         for report in &reports {
             info!(
@@ -503,4 +594,24 @@ pub async fn auto_update_pass(state: &State) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_due;
+
+    fn hours_ago(hours: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339()
+    }
+
+    #[test]
+    fn due_interval_is_respected() {
+        assert!(is_due(None, 6), "first run is always due");
+        assert!(is_due(Some("not a date"), 6), "unreadable timestamp must not block");
+        assert!(is_due(Some(&hours_ago(7)), 6), "older than the interval is due");
+        assert!(!is_due(Some(&hours_ago(5)), 6), "inside the interval is not due");
+        assert!(!is_due(Some(&hours_ago(1)), 6));
+        assert!(is_due(Some(&hours_ago(2)), 1), "one hour interval passes sooner");
+        assert!(is_due(Some(&hours_ago(1)), 0), "zero is clamped to one hour");
+    }
 }

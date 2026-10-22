@@ -95,6 +95,10 @@ mod get {
 #[derive(ToSchema, serde::Deserialize)]
 pub struct UpdateWhitelistRequest {
     pub entries: Vec<WhitelistEntry>,
+    /// Writes `white-list` in server.properties when set, so the list can be switched on
+    /// from this page instead of hunting for the key in the properties editor.
+    #[serde(default)]
+    pub enforced: Option<bool>,
 }
 
 mod put {
@@ -123,7 +127,6 @@ mod put {
 
         let properties = read_properties(&state, &server.0).await?;
         let online_mode = properties.get("online-mode") != Some("false");
-        let enforced = properties.get("white-list") == Some("true");
 
         let mut entries: Vec<whitelist::Entry> = Vec::with_capacity(data.entries.len());
         let mut seen = std::collections::HashSet::new();
@@ -154,6 +157,16 @@ mod put {
         }
 
         server_file::write(&state, &server.0, FILE, whitelist::render(&entries)).await?;
+
+        if let Some(enforced) = data.enforced {
+            let content = server_file::read(&state, &server.0, PROPERTIES_FILE).await?;
+            let mut properties = Properties::parse(&content);
+
+            if properties.set("white-list", if enforced { "true" } else { "false" }) {
+                server_file::write(&state, &server.0, PROPERTIES_FILE, properties.render()).await?;
+            }
+        }
+
         server_file::reload_whitelist(&state, &server.0).await?;
 
         activity_logger
@@ -162,11 +175,12 @@ mod put {
                 serde_json::json!({
                     "file": FILE,
                     "players": added,
+                    "enforced": data.enforced,
                 }),
             )
             .await;
 
-        let (entries, _, _) = load(&state, &server.0).await?;
+        let (entries, enforced, online_mode) = load(&state, &server.0).await?;
 
         ApiResponse::new_serialized(WhitelistResponse {
             entries,

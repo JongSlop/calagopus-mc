@@ -39,8 +39,9 @@ impl Extension for ExtensionStruct {
         _state: State,
         builder: BackgroundTaskBuilder,
     ) -> BackgroundTaskBuilder {
-        // Every six hours, only unpinned mods, only while the server is offline.
-        let cron = std::str::FromStr::from_str("0 0 */6 * * *").expect("valid cron expression");
+        // Wakes up hourly; each server's manifest decides whether it is due yet. Only
+        // unpinned mods, only while the server is offline.
+        let cron = std::str::FromStr::from_str("0 0 * * * *").expect("valid cron expression");
 
         builder
             .add_cron_task(

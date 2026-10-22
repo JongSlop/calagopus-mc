@@ -157,9 +157,74 @@ mod put {
     }
 }
 
+#[derive(ToSchema, Deserialize)]
+pub struct UpdateRawRequest {
+    /// The complete file. Comments and key order are kept as sent.
+    pub content: String,
+}
+
+mod put_raw {
+    use super::*;
+
+    #[utoipa::path(put, path = "/raw", request_body = UpdateRawRequest, responses(
+        (status = OK, body = inline(PropertiesResponse)),
+        (status = UNAUTHORIZED, body = ApiError),
+        (status = FORBIDDEN, body = ApiError),
+        (status = BAD_REQUEST, body = ApiError),
+    ), params(
+        (
+            "server" = uuid::Uuid,
+            description = "The server ID",
+            example = "123e4567-e89b-12d3-a456-426614174000",
+        ),
+    ))]
+    pub async fn route(
+        state: GetState,
+        permissions: GetPermissionManager,
+        server: GetServer,
+        activity_logger: GetServerActivityLogger,
+        axum::Json(data): axum::Json<UpdateRawRequest>,
+    ) -> ApiResponseResult {
+        permissions.has_server_permission("minecraft-properties.update")?;
+
+        // Java reads this file line by line; a line without '=' would be dropped silently,
+        // so refuse anything that is not a comment, a blank line or a key=value pair.
+        for (index, line) in data.content.lines().enumerate() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty()
+                || trimmed.starts_with('#')
+                || trimmed.starts_with('!')
+                || trimmed.contains('=')
+                || trimmed.contains(':')
+            {
+                continue;
+            }
+
+            return ApiResponse::error(format!(
+                "line {} is not a comment or a key=value pair",
+                index + 1
+            ))
+            .ok();
+        }
+
+        server_file::write(&state, &server.0, FILE, data.content.clone()).await?;
+
+        activity_logger
+            .log(
+                "server:dev.smto.minecraft.properties.update_raw",
+                serde_json::json!({ "file": FILE }),
+            )
+            .await;
+
+        ApiResponse::new_serialized(PropertiesResponse::new(data.content)).ok()
+    }
+}
+
 pub fn router(state: &shared::State) -> OpenApiRouter<shared::State> {
     OpenApiRouter::new()
         .routes(routes!(get::route))
         .routes(routes!(put::route))
+        .routes(routes!(put_raw::route))
         .with_state(state.clone())
 }
