@@ -23,6 +23,17 @@ docker compose restart web
 `panel-rs extensions resync` runs automatically on start and picks up the mounted
 sources under `../ext/dev_smto_minecraft`.
 
+The frontend is embedded into the `panel-rs` binary at compile time, so a change to
+`frontend/` needs both steps, in this order, or the panel keeps serving the old UI:
+
+```bash
+docker compose exec web sh -c 'cd /app/repo/frontend && pnpm build'
+docker compose exec web sh -c 'cd /app/repo && cargo build --profile dev --bin panel-rs'
+docker compose restart web
+```
+
+Restarting alone never picks up frontend changes, and a browser reload cannot either.
+
 Unit tests for the extension crate:
 
 ```bash

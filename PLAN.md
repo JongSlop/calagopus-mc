@@ -49,7 +49,8 @@ docker exec dev-web-1 sh -c 'cd /app/repo && panel-rs extensions apply --profile
 4. Loaders: Fabric, NeoForge and plain Forge from the start (Forge should cost little extra: mostly a loader tag in queries and detection).
 5. CurseForge API key: the user supplies their own, stored in extension settings. Never reuse the key from the old extension.
 6. AutoModpack 4.0.5 runs on every server. Client-side mods are installable too, but only into `/automodpack/host-modpack/main/mods`. Server-side mods go to `/mods` as usual. Details:
-   - Install target is chosen per mod: server mod to `/mods`, client-only mod to the AutoModpack host dir. Mods needed on both sides may go to both (open question).
+   - Install target is chosen per mod: mods the server loads go to `/mods`, mods only the client needs go to the AutoModpack host dir.
+   - Corrected: `/mods` is **not** server-only. AutoModpack syncs it to clients on join. Only the host-modpack dir is client-only, and a mod that must never reach players needs an exclusion in the AutoModpack config (rare).
    - Do not filter out Modrinth `client_side: required` + `server_side: unsupported` mods any more. Route them to the AutoModpack dir instead.
    - The lockfile records the target dir per file, so pinning and auto-update work for both dirs.
    - Check how AutoModpack 4.0.5 treats `host-modpack/main` (it may regenerate its modpack hash on change, so avoid half-written files: download to a temp name, verify, then rename).

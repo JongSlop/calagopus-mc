@@ -36,9 +36,10 @@ impl Loader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
-    /// `/mods`, loaded by the server.
+    /// `/mods`: loaded by the server and also synced to players by AutoModpack.
     Server,
-    /// `/automodpack/host-modpack/main/mods`, served to players by AutoModpack.
+    /// `/automodpack/host-modpack/main/mods`: client-only, the server does not load it.
+    /// AutoModpack still delivers it to players, so this is not "server only" either.
     Client,
 }
 

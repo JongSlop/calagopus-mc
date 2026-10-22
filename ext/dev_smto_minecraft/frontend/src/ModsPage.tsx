@@ -81,7 +81,8 @@ interface SearchHit {
 
 const endpoint = (serverUuid: string) => `/api/client/servers/${serverUuid}/dev.smto.minecraft/mods`;
 
-const targetLabel = (target: Target) => (target === 'server' ? 'server (/mods)' : 'client (AutoModpack)');
+const targetLabel = (target: Target) =>
+  target === 'server' ? '/mods (server and players)' : 'client only (AutoModpack)';
 
 export default function ModsPage() {
   const serverUuid = useServerStore((state) => state.server.uuid);
@@ -381,7 +382,7 @@ export default function ModsPage() {
               w={180}
               data={[
                 { value: 'all', label: 'Server and client' },
-                { value: 'server', label: 'Server only' },
+                { value: 'server', label: 'In /mods' },
                 { value: 'client', label: 'Client only' },
               ]}
               value={targetFilter}
@@ -506,8 +507,10 @@ export default function ModsPage() {
           </Group>
 
           <Alert color='blue' variant='light' mb='md'>
-            Mods the server needs go to <code>/mods</code>. Client-only mods go to the AutoModpack directory, so players
-            get them from the server automatically.
+            Everything in <code>/mods</code> is loaded by the server and synced to players when they join, so
+            server-side mods belong there. Mods the server itself does not need go to the AutoModpack directory and are
+            still delivered to players. A mod that must never reach players has to be excluded in the AutoModpack config,
+            which is rarely needed.
           </Alert>
 
           {hits?.length === 0 && <p>Nothing found.</p>}
