@@ -8,7 +8,7 @@ import {
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { ActionIcon, Alert, Badge, Image, Loader, Select, Switch, Table } from '@mantine/core';
 import { useEffect, useState } from 'react';
-import { Modal } from '@mantine/core';
+import { Modal, Tabs } from '@mantine/core';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
 import TitleCard from '@/elements/data-display/TitleCard.tsx';
@@ -110,6 +110,8 @@ export default function ModsPage() {
   } | null>(null);
   const [pickerVersions, setPickerVersions] = useState<VersionOption[] | null>(null);
   const [pickedVersion, setPickedVersion] = useState<string | null>(null);
+  const [modFilter, setModFilter] = useState('');
+  const [targetFilter, setTargetFilter] = useState<'all' | Target>('all');
 
   const apply = (data: ModsResponse) => {
     setMods(data.mods);
@@ -284,9 +286,29 @@ export default function ModsPage() {
       .finally(() => setBusy(false));
   };
 
+  const needle = modFilter.trim().toLowerCase();
+  const visibleMods = mods.filter((mod) => {
+    if (targetFilter !== 'all' && mod.target !== targetFilter) return false;
+    if (!needle) return true;
+
+    return [mod.project_name, mod.project_id, mod.filename, mod.version_name]
+      .join(' ')
+      .toLowerCase()
+      .includes(needle);
+  });
+
   return (
     <ServerContentContainer title='Mods'>
-      <Stack>
+      <Tabs defaultValue='installed'>
+        <Tabs.List mb='md'>
+          <Tabs.Tab value='installed'>
+            Installed mods{updates !== null && updates.length > 0 ? ` (${updates.length} updates)` : ''}
+          </Tabs.Tab>
+          <Tabs.Tab value='find'>Find mods</Tabs.Tab>
+          <Tabs.Tab value='loader'>Loader and version</Tabs.Tab>
+        </Tabs.List>
+
+        <Tabs.Panel value='loader'>
         <TitleCard title='Loader and version'>
           <Alert color='blue' variant='light' mb='md'>
             Detected from the server files. Correct it here if detection got it wrong, for example for custom
@@ -341,15 +363,41 @@ export default function ModsPage() {
             )}
           </Group>
         </TitleCard>
+        </Tabs.Panel>
 
+        <Tabs.Panel value='installed'>
         <TitleCard
           title='Installed mods'
           leftSection={updates !== null && updates.length > 0 ? <Badge color='blue'>{updates.length} updates</Badge> : undefined}
         >
+          <Group mb='md'>
+            <TextInput
+              style={{ flex: 1 }}
+              placeholder='Filter by name, id or file'
+              value={modFilter}
+              onChange={(event) => setModFilter(event.currentTarget.value)}
+            />
+            <Select
+              w={180}
+              data={[
+                { value: 'all', label: 'Server and client' },
+                { value: 'server', label: 'Server only' },
+                { value: 'client', label: 'Client only' },
+              ]}
+              value={targetFilter}
+              onChange={(value) => value && setTargetFilter(value as 'all' | Target)}
+            />
+            <small>
+              {visibleMods.length} of {mods.length}
+            </small>
+          </Group>
+
           {loading ? (
             <Loader />
           ) : mods.length === 0 ? (
             <p>No mods are managed by this extension yet.</p>
+          ) : visibleMods.length === 0 ? (
+            <p>No mod matches the filter.</p>
           ) : (
             <Table>
               <Table.Thead>
@@ -362,7 +410,7 @@ export default function ModsPage() {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {mods.map((mod) => (
+                {visibleMods.map((mod) => (
                   <Table.Tr key={`${mod.project_id}-${mod.target}`}>
                     <Table.Td>{mod.project_name}</Table.Td>
                     <Table.Td>
@@ -429,7 +477,9 @@ export default function ModsPage() {
             )}
           </Group>
         </TitleCard>
+        </Tabs.Panel>
 
+        <Tabs.Panel value='find'>
         <TitleCard title='Find mods'>
           <Group mb='md'>
             <Select
@@ -508,7 +558,8 @@ export default function ModsPage() {
             ))}
           </Stack>
         </TitleCard>
-      </Stack>
+        </Tabs.Panel>
+      </Tabs>
 
       <Modal opened={!!picker} onClose={() => setPicker(null)} title={`Version of ${picker?.title ?? ''}`}>
         {pickerVersions === null ? (
