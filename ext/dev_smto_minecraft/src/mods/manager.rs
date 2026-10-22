@@ -521,6 +521,10 @@ fn is_due(last_run: Option<&str>, interval_hours: u32) -> bool {
 /// One auto-update pass over every server. Runs from the cron task, so it must not
 /// assume a request context.
 pub async fn auto_update_pass(state: &State) -> anyhow::Result<()> {
+    if !crate::settings::auto_updates_enabled(state).await? {
+        return Ok(());
+    }
+
     let server_uuids: Vec<uuid::Uuid> =
         sqlx::query_scalar("SELECT uuid FROM servers WHERE suspended = false")
             .fetch_all(state.database.write())

@@ -39,3 +39,27 @@ pub async fn set_curseforge_key(state: &State, key: Option<&str>) -> anyhow::Res
 
     Ok(())
 }
+
+/// Panel-wide kill switch. Per server toggles still exist, this one stops the
+/// background task before it even looks at a server.
+pub async fn auto_updates_enabled(state: &State) -> anyhow::Result<bool> {
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT auto_updates_enabled FROM dev_smto_minecraft_settings WHERE id = 1",
+    )
+    .fetch_one(state.database.write())
+    .await?;
+
+    Ok(enabled)
+}
+
+pub async fn set_auto_updates_enabled(state: &State, enabled: bool) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO dev_smto_minecraft_settings (id, auto_updates_enabled) VALUES (1, $1)
+         ON CONFLICT (id) DO UPDATE SET auto_updates_enabled = EXCLUDED.auto_updates_enabled",
+    )
+    .bind(enabled)
+    .execute(state.database.write())
+    .await?;
+
+    Ok(())
+}

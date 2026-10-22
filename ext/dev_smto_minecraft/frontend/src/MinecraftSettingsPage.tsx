@@ -1,6 +1,6 @@
-import { faKey, faFloppyDisk } from '@fortawesome/free-solid-svg-icons';
+import { faArrowsRotate, faFloppyDisk, faKey } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { Alert } from '@mantine/core';
+import { Alert, Switch } from '@mantine/core';
 import { useEffect, useState } from 'react';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
@@ -11,6 +11,7 @@ import { useToast } from '@/providers/ToastProvider.tsx';
 
 interface SettingsResponse {
   curseforge_configured: boolean;
+  auto_updates_enabled: boolean;
 }
 
 const endpoint = '/api/admin/dev.smto.minecraft/settings';
@@ -19,24 +20,48 @@ export default function MinecraftSettingsPage() {
   const { addToast } = useToast();
 
   const [configured, setConfigured] = useState(false);
+  const [autoUpdates, setAutoUpdates] = useState(true);
   const [apiKey, setApiKey] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     axiosInstance
       .get<SettingsResponse>(endpoint)
-      .then(({ data }) => setConfigured(data.curseforge_configured))
+      .then(({ data }) => {
+        setConfigured(data.curseforge_configured);
+        setAutoUpdates(data.auto_updates_enabled);
+      })
       .catch((msg) => addToast(httpErrorToHuman(msg), 'error'));
   }, []);
+
+  const apply = (data: SettingsResponse) => {
+    setConfigured(data.curseforge_configured);
+    setAutoUpdates(data.auto_updates_enabled);
+  };
 
   const save = (key: string | null) => {
     setBusy(true);
     axiosInstance
-      .put<SettingsResponse>(endpoint, { curseforge_api_key: key })
+      .put<SettingsResponse>(endpoint, { curseforge_api_key: key ?? '' })
       .then(({ data }) => {
-        setConfigured(data.curseforge_configured);
+        apply(data);
         setApiKey('');
         addToast(key ? 'CurseForge API key saved.' : 'CurseForge API key removed.', 'success');
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const setAutoUpdatesEnabled = (enabled: boolean) => {
+    setBusy(true);
+    axiosInstance
+      .put<SettingsResponse>(endpoint, { auto_updates_enabled: enabled })
+      .then(({ data }) => {
+        apply(data);
+        addToast(
+          enabled ? 'Mod auto updates are enabled again.' : 'Mod auto updates are off for every server.',
+          'success',
+        );
       })
       .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
       .finally(() => setBusy(false));
@@ -73,6 +98,21 @@ export default function MinecraftSettingsPage() {
             Remove key
           </Button>
         )}
+      </TitleCard>
+      <TitleCard title='Mod auto updates' icon={<FontAwesomeIcon icon={faArrowsRotate} />}>
+        <Alert color={autoUpdates ? 'blue' : 'yellow'} variant='light' mb='md'>
+          {autoUpdates
+            ? 'The background task runs. Each server decides on its own page whether it takes part, and how often.'
+            : 'The background task does nothing at all. Servers keep their own settings for when it is switched back on.'}
+        </Alert>
+
+        <Switch
+          label='Run mod auto updates'
+          description='Panel-wide switch. Turning it off stops the task before it reads any server.'
+          checked={autoUpdates}
+          onChange={(event) => setAutoUpdatesEnabled(event.currentTarget.checked)}
+          disabled={busy}
+        />
       </TitleCard>
     </AdminContentContainer>
   );
