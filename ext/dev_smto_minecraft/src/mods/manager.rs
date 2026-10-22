@@ -60,6 +60,8 @@ struct ResolvedFile {
     version_id: String,
     /// sha512 hex, when the provider gives us one to verify.
     sha512: Option<String>,
+    /// Required dependency project ids.
+    dependencies: Vec<String>,
 }
 
 async fn curseforge_key(state: &State) -> anyhow::Result<String> {
@@ -100,12 +102,20 @@ async fn resolve(
 
             let sha512 = file.sha512().map(str::to_string);
 
+            let dependencies = version
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.dependency_type == "required")
+                .filter_map(|dependency| dependency.project_id.clone())
+                .collect();
+
             Ok(ResolvedFile {
                 url: file.url,
                 filename: file.filename,
                 version_name: version.version_number,
                 version_id: version.id,
                 sha512,
+                dependencies,
             })
         }
         Provider::CurseForge => {
@@ -134,12 +144,20 @@ async fn resolve(
                 )
             })?;
 
+            let dependencies = file
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.is_required())
+                .map(|dependency| dependency.mod_id.to_string())
+                .collect();
+
             Ok(ResolvedFile {
                 url,
                 filename: file.file_name,
                 version_name: file.display_name,
                 version_id: file.id.to_string(),
                 sha512: None,
+                dependencies,
             })
         }
     }
@@ -203,13 +221,15 @@ pub async fn install_one(
             server_file::delete(state, server, format!("{target_dir}/{}", previous.filename)).await;
     }
 
+    let project_name = match &previous {
+        Some(entry) => entry.project_name.clone(),
+        None => project_name_for(state, provider, project_id).await,
+    };
+
     let entry = InstalledMod {
         provider: provider.as_str().to_string(),
         project_id: project_id.to_string(),
-        project_name: previous
-            .as_ref()
-            .map(|entry| entry.project_name.clone())
-            .unwrap_or_else(|| project_id.to_string()),
+        project_name,
         version_id: resolved.version_id,
         version_name: resolved.version_name,
         filename: resolved.filename,
@@ -223,6 +243,58 @@ pub async fn install_one(
     manifest.upsert(entry.clone());
 
     Ok(entry)
+}
+
+/// Installs a mod plus its required dependencies that are not managed yet. Only one
+/// dependency level is followed, deeper graphs are rare for Minecraft mods.
+/// ponytail: single level, walk recursively if nested requirements show up in practice
+pub async fn install_with_dependencies(
+    state: &State,
+    server: &Server,
+    manifest: &mut Manifest,
+    provider: Provider,
+    project_id: &str,
+    version_id: Option<&str>,
+    target: Target,
+) -> anyhow::Result<InstalledMod> {
+    let entry = install_one(state, server, manifest, provider, project_id, version_id, target).await?;
+
+    let resolved = resolve(state, manifest, provider, project_id, version_id).await?;
+
+    for dependency in resolved.dependencies {
+        if manifest
+            .mods
+            .iter()
+            .any(|entry| entry.project_id == dependency)
+        {
+            continue;
+        }
+
+        if let Err(err) = install_one(state, server, manifest, provider, &dependency, None, target).await
+        {
+            warn!(
+                server = %server.uuid,
+                dependency,
+                "cannot install dependency: {err:#}"
+            );
+        }
+    }
+
+    Ok(entry)
+}
+
+async fn project_name_for(state: &State, provider: Provider, project_id: &str) -> String {
+    let name = match provider {
+        Provider::Modrinth => modrinth::project_title(project_id).await,
+        Provider::CurseForge => match (curseforge_key(state).await, project_id.parse::<u32>()) {
+            (Ok(api_key), Ok(mod_id)) => curseforge::mod_info(&api_key, mod_id)
+                .await
+                .map(|info| info.name),
+            _ => Err(anyhow::anyhow!("no CurseForge key")),
+        },
+    };
+
+    name.unwrap_or_else(|_| project_id.to_string())
 }
 
 fn provider_of(entry: &InstalledMod) -> Provider {

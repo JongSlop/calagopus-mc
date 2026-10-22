@@ -124,6 +124,24 @@ pub async fn versions(
         .await?)
 }
 
+/// Project title, used for display of newly installed mods.
+pub async fn project_title(project_id: &str) -> anyhow::Result<String> {
+    #[derive(Deserialize)]
+    struct Project {
+        title: String,
+    }
+
+    let project = client()
+        .get(format!("{BASE}/project/{project_id}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Project>()
+        .await?;
+
+    Ok(project.title)
+}
+
 pub async fn version(version_id: &str) -> anyhow::Result<Version> {
     Ok(client()
         .get(format!("{BASE}/version/{version_id}"))

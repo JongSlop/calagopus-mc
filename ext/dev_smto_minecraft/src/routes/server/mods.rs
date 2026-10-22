@@ -488,7 +488,7 @@ pub async fn install(
     permissions.has_server_permission("minecraft-mods.update")?;
 
     let mut manifest = read_manifest(&state, &server.0).await?;
-    let entry = manager::install_one(
+    let entry = manager::install_with_dependencies(
         &state,
         &server,
         &mut manifest,
