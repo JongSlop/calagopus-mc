@@ -1,5 +1,6 @@
-import { faCubes, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { faCubes, faPuzzlePiece, faUsers } from '@fortawesome/free-solid-svg-icons';
 import { Extension, ExtensionContext } from 'shared';
+import ModsPage from './ModsPage.tsx';
 import PropertiesPage from './PropertiesPage.tsx';
 import WhitelistPage from './WhitelistPage.tsx';
 
@@ -23,6 +24,14 @@ class DevSmtoMinecraftExtension extends Extension {
         path: '/dev-smto-minecraft/whitelist',
         element: WhitelistPage,
         permission: 'minecraft-whitelist.read',
+      });
+
+      routes.addServerRoute({
+        name: 'Mods',
+        icon: faPuzzlePiece,
+        path: '/dev-smto-minecraft/mods',
+        element: ModsPage,
+        permission: 'minecraft-mods.read',
       });
     });
   }

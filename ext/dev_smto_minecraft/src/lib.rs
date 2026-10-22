@@ -4,6 +4,7 @@ use shared::{
     permissions::PermissionGroup,
 };
 
+pub mod mods;
 pub mod properties;
 pub mod server_file;
 pub mod whitelist;
@@ -43,6 +44,16 @@ impl Extension for ExtensionStruct {
                         "update",
                         "Allows changing the server.properties file of this server.",
                     ),
+                ]),
+            },
+        )
+        .add_server_permission_group(
+            "minecraft-mods",
+            PermissionGroup {
+                description: "Permissions for browsing and managing server mods.",
+                permissions: indexmap::IndexMap::from([
+                    ("read", "Allows browsing installed and available mods."),
+                    ("update", "Allows installing, removing, pinning and updating mods."),
                 ]),
             },
         )

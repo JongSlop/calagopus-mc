@@ -72,6 +72,68 @@ pub async fn write(state: &shared::State, server: &GetServer, file: &str, conten
     Ok(())
 }
 
+pub async fn write_bytes(
+    state: &shared::State,
+    server: &GetServer,
+    file: &str,
+    bytes: Vec<u8>,
+) -> anyhow::Result<()> {
+    let node = server.node.fetch_cached(&state.database).await?;
+    let api = node.api_client(&state.database).await?;
+
+    api.post_servers_server_files_write(
+        server.uuid,
+        wings_api::client::AsyncRequestReader::new(std::io::Cursor::new(bytes)),
+        &wings_api::servers_server_files_write::post::Query {
+            file: Some(file.into()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+pub async fn rename(
+    state: &shared::State,
+    server: &GetServer,
+    from: &str,
+    to: &str,
+) -> anyhow::Result<()> {
+    let node = server.node.fetch_cached(&state.database).await?;
+    let api = node.api_client(&state.database).await?;
+
+    api.put_servers_server_files_rename(
+        server.uuid,
+        &wings_api::servers_server_files_rename::put::RequestBody {
+            root: "/".into(),
+            files: vec![wings_api::servers_server_files_rename::put::RequestBodyFiles {
+                from: from.into(),
+                to: to.into(),
+            }],
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+pub async fn delete(state: &shared::State, server: &GetServer, file: String) -> anyhow::Result<()> {
+    let node = server.node.fetch_cached(&state.database).await?;
+    let api = node.api_client(&state.database).await?;
+
+    api.post_servers_server_files_delete(
+        server.uuid,
+        &wings_api::servers_server_files_delete::post::RequestBody {
+            root: "/".into(),
+            files: vec![file.into()],
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
 /// Sends console commands, ignoring failures when the server is not running.
 pub async fn send_commands(
     state: &shared::State,
