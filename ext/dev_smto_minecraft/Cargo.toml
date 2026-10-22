@@ -26,3 +26,4 @@ hex = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 croner = { workspace = true }
+compact_str = { workspace = true }

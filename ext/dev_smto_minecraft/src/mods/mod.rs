@@ -5,6 +5,7 @@
 //! panel database, so it travels with the server on transfers and restores and does
 //! not tie the extension to a database schema.
 
+pub mod curseforge;
 pub mod manager;
 pub mod modrinth;
 
@@ -119,6 +120,34 @@ impl Manifest {
 
         Some(self.mods.remove(index))
     }
+}
+
+/// Downloads a file and returns its bytes plus the sha512 hash of what arrived.
+pub async fn download(url: &str, max_bytes: u64) -> anyhow::Result<(Vec<u8>, String)> {
+    use sha2::{Digest, Sha512};
+
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .user_agent("dev.smto.minecraft/0.1.0 (Calagopus panel extension)")
+        .build()?
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    if let Some(length) = response.content_length()
+        && length > max_bytes
+    {
+        anyhow::bail!("file is {length} bytes, above the {max_bytes} byte limit");
+    }
+
+    let bytes = response.bytes().await?;
+
+    if bytes.len() as u64 > max_bytes {
+        anyhow::bail!("file exceeded the {max_bytes} byte limit");
+    }
+
+    Ok((bytes.to_vec(), hex::encode(Sha512::digest(&bytes))))
 }
 
 /// A directory entry as returned by wings, reduced to what detection needs.

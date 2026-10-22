@@ -133,30 +133,3 @@ pub async fn version(version_id: &str) -> anyhow::Result<Version> {
         .json::<Version>()
         .await?)
 }
-
-/// Downloads a file and returns its bytes plus the sha512 hash of what arrived.
-pub async fn download(url: &str, max_bytes: u64) -> anyhow::Result<(Vec<u8>, String)> {
-    let response = client()
-        .get(url)
-        .timeout(std::time::Duration::from_secs(300))
-        .send()
-        .await?
-        .error_for_status()?;
-
-    if let Some(length) = response.content_length()
-        && length > max_bytes
-    {
-        anyhow::bail!("file is {length} bytes, above the {max_bytes} byte limit");
-    }
-
-    let bytes = response.bytes().await?;
-
-    if bytes.len() as u64 > max_bytes {
-        anyhow::bail!("file exceeded the {max_bytes} byte limit");
-    }
-
-    use sha2::{Digest, Sha512};
-    let hash = hex::encode(Sha512::digest(&bytes));
-
-    Ok((bytes.to_vec(), hash))
-}

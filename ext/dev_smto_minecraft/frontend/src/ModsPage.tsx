@@ -14,6 +14,7 @@ import { useServerStore } from '@/stores/server.ts';
 
 type Loader = 'fabric' | 'neoforge' | 'forge';
 type Target = 'server' | 'client';
+type Provider = 'modrinth' | 'curseforge';
 
 interface InstalledMod {
   provider: string;
@@ -77,6 +78,7 @@ export default function ModsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
+  const [provider, setProvider] = useState<Provider>('modrinth');
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searchTarget, setSearchTarget] = useState<Record<string, Target>>({});
@@ -115,7 +117,7 @@ export default function ModsPage() {
   const search = () => {
     setBusy(true);
     axiosInstance
-      .get<SearchHit[]>(`${endpoint(serverUuid)}/search`, { params: { query } })
+      .get<SearchHit[]>(`${endpoint(serverUuid)}/search`, { params: { query, provider } })
       .then(({ data }) => {
         setHits(data);
         setSearchTarget(Object.fromEntries(data.map((hit) => [hit.project_id, hit.suggested_target])));
@@ -131,6 +133,7 @@ export default function ModsPage() {
       .post<ModsResponse>(`${endpoint(serverUuid)}/install`, {
         project_id: hit.project_id,
         target,
+        provider,
       })
       .then(({ data }) => {
         apply(data);
@@ -307,9 +310,18 @@ export default function ModsPage() {
 
         <TitleCard title='Find mods'>
           <Group mb='md'>
+            <Select
+              w={160}
+              data={[
+                { value: 'modrinth', label: 'Modrinth' },
+                { value: 'curseforge', label: 'CurseForge' },
+              ]}
+              value={provider}
+              onChange={(value) => value && setProvider(value as Provider)}
+            />
             <TextInput
               style={{ flex: 1 }}
-              placeholder='Search Modrinth'
+              placeholder='Search for mods'
               value={query}
               onChange={(event) => setQuery(event.currentTarget.value)}
               onKeyDown={(event) => {

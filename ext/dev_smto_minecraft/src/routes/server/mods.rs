@@ -11,7 +11,10 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
-    mods::{self, InstalledMod, Loader, MANIFEST_FILE, Manifest, Target, manager, modrinth},
+    mods::{
+        self, InstalledMod, Loader, MANIFEST_FILE, Manifest, Target, curseforge, manager,
+        manager::Provider, modrinth,
+    },
     server_file,
 };
 
@@ -217,6 +220,7 @@ pub struct SearchParams {
     pub query: Option<String>,
     pub loader: Option<Loader>,
     pub mc_version: Option<String>,
+    pub provider: Option<Provider>,
 }
 
 #[utoipa::path(get, path = "/search", responses(
@@ -257,38 +261,74 @@ pub async fn search(
         .ok();
     };
 
-    let hits = modrinth::search(
-        params.query.as_deref().unwrap_or(""),
-        Some(loader),
-        Some(&mc_version),
-        20,
-    )
-    .await
-    .map_err(|err| ApiResponse::error(err.to_string()))?;
+    let hits = match params.provider.unwrap_or(Provider::Modrinth) {
+        Provider::Modrinth => {
+            let hits = modrinth::search(
+                params.query.as_deref().unwrap_or(""),
+                Some(loader),
+                Some(&mc_version),
+                20,
+            )
+            .await
+            .map_err(|err| ApiResponse::error(err.to_string()))?;
 
-    let hits = hits
-        .into_iter()
-        .map(|hit| {
-            // Mods with no server-side support can only go to AutoModpack.
-            let suggested_target = if hit.server_side == "unsupported" {
-                Target::Client
-            } else {
-                Target::Server
-            };
+            hits.into_iter()
+                .map(|hit| {
+                    // Mods with no server-side support can only go to AutoModpack.
+                    let suggested_target = if hit.server_side == "unsupported" {
+                        Target::Client
+                    } else {
+                        Target::Server
+                    };
 
-            SearchHitResponse {
-                project_id: hit.project_id,
+                    SearchHitResponse {
+                        project_id: hit.project_id,
+                        slug: hit.slug,
+                        title: hit.title,
+                        description: hit.description,
+                        icon_url: hit.icon_url,
+                        downloads: hit.downloads,
+                        client_side: hit.client_side,
+                        server_side: hit.server_side,
+                        suggested_target,
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        Provider::CurseForge => {
+            let api_key = crate::settings::curseforge_key(&state)
+                .await
+                .map_err(|err| ApiResponse::error(err.to_string()))?
+                .ok_or_else(|| {
+                    ApiResponse::error(
+                        "no CurseForge API key configured, add one in the extension settings",
+                    )
+                })?;
+
+            curseforge::search(
+                &api_key,
+                params.query.as_deref().unwrap_or(""),
+                Some(loader),
+                Some(&mc_version),
+            )
+            .await
+            .map_err(|err| ApiResponse::error(err.to_string()))?
+            .into_iter()
+            .map(|hit| SearchHitResponse {
+                project_id: hit.id.to_string(),
                 slug: hit.slug,
-                title: hit.title,
-                description: hit.description,
-                icon_url: hit.icon_url,
-                downloads: hit.downloads,
-                client_side: hit.client_side,
-                server_side: hit.server_side,
-                suggested_target,
-            }
-        })
-        .collect::<Vec<_>>();
+                title: hit.name,
+                description: hit.summary,
+                icon_url: Some(hit.logo.map(|logo| logo.thumbnail_url).unwrap_or_default()),
+                downloads: hit.downloads.total,
+                // CurseForge does not report per-side support in search results.
+                client_side: "unknown".to_string(),
+                server_side: "unknown".to_string(),
+                suggested_target: Target::Server,
+            })
+            .collect::<Vec<_>>()
+        }
+    };
 
     ApiResponse::new_serialized(hits).ok()
 }
@@ -328,54 +368,101 @@ pub async fn versions(
     server: GetServer,
     // The server uuid is part of the path too, so the extraction is a pair.
     axum::extract::Path((_server, project_id)): axum::extract::Path<(uuid::Uuid, String)>,
+    axum::extract::Query(params): axum::extract::Query<SearchParams>,
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.read")?;
 
     let manifest = read_manifest(&state, &server.0).await?;
     let loader = manifest.detection.loader.map(Loader::as_str);
 
-    let versions = modrinth::versions(
-        &project_id,
-        loader,
-        manifest.detection.mc_version.as_deref(),
-    )
-    .await
-    .map_err(|err| ApiResponse::error(err.to_string()))?;
+    let versions = match params.provider.unwrap_or(Provider::Modrinth) {
+        Provider::Modrinth => {
+            let versions = modrinth::versions(
+                &project_id,
+                loader,
+                manifest.detection.mc_version.as_deref(),
+            )
+            .await
+            .map_err(|err| ApiResponse::error(err.to_string()))?;
 
-    let versions = versions
-        .into_iter()
-        .take(30)
-        .map(|version| {
-            let file = version.primary_file().cloned();
+            versions
+                .into_iter()
+                .take(30)
+                .map(|version| {
+                    let file = version.primary_file().cloned();
 
-            VersionResponse {
-                id: version.id,
-                name: version.name,
-                version_number: version.version_number,
-                game_versions: version.game_versions,
-                loaders: version.loaders,
-                filename: file.as_ref().map(|file| file.filename.clone()),
-                size: file.as_ref().map(|file| file.size),
-                dependencies: version
+                    VersionResponse {
+                        id: version.id,
+                        name: version.name,
+                        version_number: version.version_number,
+                        game_versions: version.game_versions,
+                        loaders: version.loaders,
+                        filename: file.as_ref().map(|file| file.filename.clone()),
+                        size: file.as_ref().map(|file| file.size),
+                        dependencies: version
+                            .dependencies
+                            .iter()
+                            .filter(|dependency| dependency.dependency_type == "required")
+                            .filter_map(|dependency| dependency.project_id.clone())
+                            .collect(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+        Provider::CurseForge => {
+            let api_key = crate::settings::curseforge_key(&state)
+                .await
+                .map_err(|err| ApiResponse::error(err.to_string()))?
+                .ok_or_else(|| {
+                    ApiResponse::error(
+                        "no CurseForge API key configured, add one in the extension settings",
+                    )
+                })?;
+
+            let mod_id: u32 = project_id
+                .parse()
+                .map_err(|_| ApiResponse::error("not a CurseForge mod id"))?;
+
+            curseforge::files(
+                &api_key,
+                mod_id,
+                loader,
+                manifest.detection.mc_version.as_deref(),
+            )
+            .await
+            .map_err(|err| ApiResponse::error(err.to_string()))?
+            .into_iter()
+            .map(|file| VersionResponse {
+                id: file.id.to_string(),
+                name: file.display_name.clone(),
+                version_number: file.display_name,
+                game_versions: Vec::new(),
+                loaders: Vec::new(),
+                filename: Some(file.file_name),
+                size: Some(file.file_length),
+                dependencies: file
                     .dependencies
                     .iter()
-                    .filter(|dependency| dependency.dependency_type == "required")
-                    .filter_map(|dependency| dependency.project_id.clone())
+                    .filter(|dependency| dependency.is_required())
+                    .map(|dependency| dependency.mod_id.to_string())
                     .collect(),
-            }
-        })
-        .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>()
+        }
+    };
 
     ApiResponse::new_serialized(versions).ok()
 }
 
 #[derive(ToSchema, Deserialize)]
 pub struct InstallRequest {
-    /// Modrinth project id or slug.
+    /// Modrinth project id or slug, or the numeric CurseForge mod id.
     pub project_id: String,
-    /// Version id. Omitted picks the newest compatible version.
+    /// Version id (Modrinth) or file id (CurseForge). Omitted picks the newest compatible one.
     pub version_id: Option<String>,
     pub target: Target,
+    #[serde(default)]
+    pub provider: Option<Provider>,
 }
 
 #[utoipa::path(post, path = "/install", request_body = InstallRequest, responses(
@@ -405,6 +492,7 @@ pub async fn install(
         &state,
         &server,
         &mut manifest,
+        data.provider.unwrap_or(Provider::Modrinth),
         &data.project_id,
         data.version_id.as_deref(),
         data.target,

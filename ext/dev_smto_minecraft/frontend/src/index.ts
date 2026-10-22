@@ -1,5 +1,6 @@
-import { faCubes, faPuzzlePiece, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { faCubes, faPuzzlePiece, faUsers, faWrench } from '@fortawesome/free-solid-svg-icons';
 import { Extension, ExtensionContext } from 'shared';
+import MinecraftSettingsPage from './MinecraftSettingsPage.tsx';
 import ModsPage from './ModsPage.tsx';
 import PropertiesPage from './PropertiesPage.tsx';
 import WhitelistPage from './WhitelistPage.tsx';
@@ -32,6 +33,15 @@ class DevSmtoMinecraftExtension extends Extension {
         path: '/dev-smto-minecraft/mods',
         element: ModsPage,
         permission: 'minecraft-mods.read',
+      });
+
+      routes.addAdminRoute({
+        name: 'Minecraft Tools',
+        icon: faWrench,
+        path: '/extensions/dev-smto-minecraft',
+        element: MinecraftSettingsPage,
+        permission: 'extensions.read',
+        category: 'extensions',
       });
     });
   }

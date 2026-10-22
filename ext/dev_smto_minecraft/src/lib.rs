@@ -8,6 +8,7 @@ use shared::{
 };
 
 pub mod mods;
+pub mod settings;
 pub mod properties;
 pub mod server_file;
 pub mod whitelist;
@@ -24,9 +25,13 @@ impl Extension for ExtensionStruct {
         state: State,
         builder: ExtensionRouteBuilder,
     ) -> ExtensionRouteBuilder {
-        builder.add_client_server_api_router(|routes| {
-            routes.nest("/dev.smto.minecraft", routes::server::router(&state))
-        })
+        builder
+            .add_client_server_api_router(|routes| {
+                routes.nest("/dev.smto.minecraft", routes::server::router(&state))
+            })
+            .add_admin_api_router(|routes| {
+                routes.nest("/dev.smto.minecraft", routes::admin::router(&state))
+            })
     }
 
     async fn initialize_background_tasks(
