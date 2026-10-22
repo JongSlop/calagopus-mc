@@ -1,6 +1,9 @@
 use shared::{
     State,
-    extensions::{Extension, ExtensionPermissionsBuilder, ExtensionRouteBuilder},
+    extensions::{
+        Extension, ExtensionPermissionsBuilder, ExtensionRouteBuilder,
+        background_tasks::BackgroundTaskBuilder,
+    },
     permissions::PermissionGroup,
 };
 
@@ -24,6 +27,25 @@ impl Extension for ExtensionStruct {
         builder.add_client_server_api_router(|routes| {
             routes.nest("/dev.smto.minecraft", routes::server::router(&state))
         })
+    }
+
+    async fn initialize_background_tasks(
+        &mut self,
+        _state: State,
+        builder: BackgroundTaskBuilder,
+    ) -> BackgroundTaskBuilder {
+        // Every six hours, only unpinned mods, only while the server is offline.
+        let cron = std::str::FromStr::from_str("0 0 */6 * * *").expect("valid cron expression");
+
+        builder
+            .add_cron_task(
+                "dev_smto_minecraft_mod_auto_update",
+                cron,
+                |state| async move { mods::manager::auto_update_pass(&state).await },
+            )
+            .await;
+
+        builder
     }
 
     async fn initialize_permissions(

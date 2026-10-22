@@ -29,14 +29,17 @@ pub struct WhitelistResponse {
     pub online_mode: bool,
 }
 
-async fn read_properties(state: &shared::State, server: &GetServer) -> anyhow::Result<Properties> {
+async fn read_properties(
+    state: &shared::State,
+    server: &shared::models::server::Server,
+) -> anyhow::Result<Properties> {
     let content = server_file::read(state, server, PROPERTIES_FILE).await?;
     Ok(Properties::parse(&content))
 }
 
 async fn load(
     state: &shared::State,
-    server: &GetServer,
+    server: &shared::models::server::Server,
 ) -> anyhow::Result<(Vec<WhitelistEntry>, bool, bool)> {
     let properties = read_properties(state, server).await?;
     let enforced = properties.get("white-list") == Some("true");
@@ -78,7 +81,7 @@ mod get {
     ) -> ApiResponseResult {
         permissions.has_server_permission("minecraft-whitelist.read")?;
 
-        let (entries, enforced, online_mode) = load(&state, &server).await?;
+        let (entries, enforced, online_mode) = load(&state, &server.0).await?;
 
         ApiResponse::new_serialized(WhitelistResponse {
             entries,
@@ -118,7 +121,7 @@ mod put {
     ) -> ApiResponseResult {
         permissions.has_server_permission("minecraft-whitelist.update")?;
 
-        let properties = read_properties(&state, &server).await?;
+        let properties = read_properties(&state, &server.0).await?;
         let online_mode = properties.get("online-mode") != Some("false");
         let enforced = properties.get("white-list") == Some("true");
 
@@ -150,8 +153,8 @@ mod put {
             entries.push(whitelist::Entry { uuid, name });
         }
 
-        server_file::write(&state, &server, FILE, whitelist::render(&entries)).await?;
-        server_file::reload_whitelist(&state, &server).await?;
+        server_file::write(&state, &server.0, FILE, whitelist::render(&entries)).await?;
+        server_file::reload_whitelist(&state, &server.0).await?;
 
         activity_logger
             .log(
@@ -163,7 +166,7 @@ mod put {
             )
             .await;
 
-        let (entries, _, _) = load(&state, &server).await?;
+        let (entries, _, _) = load(&state, &server.0).await?;
 
         ApiResponse::new_serialized(WhitelistResponse {
             entries,

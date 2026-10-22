@@ -5,6 +5,7 @@
 //! panel database, so it travels with the server on transfers and restores and does
 //! not tie the extension to a database schema.
 
+pub mod manager;
 pub mod modrinth;
 
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,9 @@ pub struct Detection {
 pub struct Manifest {
     #[serde(default)]
     pub detection: Detection,
+    /// Opt-in per server: the cron task updates unpinned mods while the server is offline.
+    #[serde(default)]
+    pub auto_update: bool,
     #[serde(default)]
     pub mods: Vec<InstalledMod>,
 }

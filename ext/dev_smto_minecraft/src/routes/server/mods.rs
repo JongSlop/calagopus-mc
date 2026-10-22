@@ -1,4 +1,3 @@
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use shared::{
     ApiError, GetState,
@@ -12,7 +11,7 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
-    mods::{self, InstalledMod, Loader, MANIFEST_FILE, Manifest, Target, modrinth},
+    mods::{self, InstalledMod, Loader, MANIFEST_FILE, Manifest, Target, manager, modrinth},
     server_file,
 };
 
@@ -56,6 +55,7 @@ pub struct DetectionResponse {
 #[derive(ToSchema, Serialize)]
 pub struct ModsResponse {
     pub detection: DetectionResponse,
+    pub auto_update: bool,
     pub mods: Vec<InstalledModResponse>,
 }
 
@@ -66,6 +66,7 @@ impl ModsResponse {
                 loader: manifest.detection.loader,
                 mc_version: manifest.detection.mc_version.clone(),
             },
+            auto_update: manifest.auto_update,
             mods: manifest.mods.iter().map(Into::into).collect(),
         }
     }
@@ -73,7 +74,7 @@ impl ModsResponse {
 
 pub(crate) async fn read_manifest(
     state: &shared::State,
-    server: &GetServer,
+    server: &shared::models::server::Server,
 ) -> anyhow::Result<Manifest> {
     let content = server_file::read_optional(state, server, MANIFEST_FILE).await?;
     Ok(content
@@ -84,7 +85,7 @@ pub(crate) async fn read_manifest(
 
 pub(crate) async fn write_manifest(
     state: &shared::State,
-    server: &GetServer,
+    server: &shared::models::server::Server,
     manifest: &Manifest,
 ) -> anyhow::Result<()> {
     server_file::write(state, server, MANIFEST_FILE, manifest.render()).await
@@ -93,7 +94,7 @@ pub(crate) async fn write_manifest(
 /// Fills in loader and version from the server directory when the manifest has none.
 pub(crate) async fn detect_and_store(
     state: &shared::State,
-    server: &GetServer,
+    server: &shared::models::server::Server,
     manifest: &mut Manifest,
 ) -> anyhow::Result<bool> {
     if manifest.detection.loader.is_some() && manifest.detection.mc_version.is_some() {
@@ -156,9 +157,9 @@ pub async fn list(
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.read")?;
 
-    let mut manifest = read_manifest(&state, &server).await?;
-    if detect_and_store(&state, &server, &mut manifest).await? {
-        write_manifest(&state, &server, &manifest).await?;
+    let mut manifest = read_manifest(&state, &server.0).await?;
+    if detect_and_store(&state, &server.0, &mut manifest).await? {
+        write_manifest(&state, &server.0, &manifest).await?;
     }
 
     ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
@@ -189,10 +190,10 @@ pub async fn set_detection(
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.update")?;
 
-    let mut manifest = read_manifest(&state, &server).await?;
+    let mut manifest = read_manifest(&state, &server.0).await?;
     manifest.detection.loader = data.loader;
     manifest.detection.mc_version = data.mc_version.filter(|version| !version.trim().is_empty());
-    write_manifest(&state, &server, &manifest).await?;
+    write_manifest(&state, &server.0, &manifest).await?;
 
     ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
 }
@@ -239,7 +240,7 @@ pub async fn search(
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.read")?;
 
-    let manifest = read_manifest(&state, &server).await?;
+    let manifest = read_manifest(&state, &server.0).await?;
     let loader = params
         .loader
         .or(manifest.detection.loader)
@@ -330,7 +331,7 @@ pub async fn versions(
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.read")?;
 
-    let manifest = read_manifest(&state, &server).await?;
+    let manifest = read_manifest(&state, &server.0).await?;
     let loader = manifest.detection.loader.map(Loader::as_str);
 
     let versions = modrinth::versions(
@@ -399,116 +400,33 @@ pub async fn install(
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.update")?;
 
-    let mut manifest = read_manifest(&state, &server).await?;
-    let loader = manifest.detection.loader.map(Loader::as_str);
-    let mc_version = manifest.detection.mc_version.clone();
-
-    let version = match &data.version_id {
-        Some(version_id) => modrinth::version(version_id).await,
-        None => {
-            let Some(mc_version) = mc_version.as_deref() else {
-                return ApiResponse::error("the Minecraft version of this server is not known").ok();
-            };
-
-            match modrinth::versions(&data.project_id, loader, Some(mc_version)).await {
-                Ok(versions) => versions
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("no compatible version found")),
-                Err(err) => Err(err),
-            }
-        }
-    }
+    let mut manifest = read_manifest(&state, &server.0).await?;
+    let entry = manager::install_one(
+        &state,
+        &server,
+        &mut manifest,
+        &data.project_id,
+        data.version_id.as_deref(),
+        data.target,
+    )
+    .await
     .map_err(|err| ApiResponse::error(err.to_string()))?;
 
-    let file = version
-        .primary_file()
-        .cloned()
-        .ok_or_else(|| ApiResponse::error("this version has no downloadable file"))?;
-
-    let (bytes, sha512) = modrinth::download(&file.url, 200 * 1024 * 1024)
-        .await
-        .map_err(|err| ApiResponse::error(err.to_string()))?;
-
-    if let Some(expected) = file.sha512()
-        && !expected.eq_ignore_ascii_case(&sha512)
-    {
-        return ApiResponse::error("the downloaded file failed hash verification")
-            .with_status(StatusCode::BAD_GATEWAY)
-            .ok();
-    }
-
-    let target_dir = data.target.dir();
-
-    if data.target == Target::Client {
-        ensure_client_dir(&state, &server).await?;
-    }
-
-    let previous = manifest.find(&data.project_id, data.target).cloned();
-    let path = format!("{target_dir}/{}", file.filename);
-
-    // Write next to the target and rename, so AutoModpack and Minecraft never see a
-    // half-written jar.
-    let temp_path = format!("{target_dir}/.smto-{}.tmp", uuid::Uuid::new_v4());
-    server_file::write_bytes(&state, &server, &temp_path, bytes).await?;
-    server_file::rename(&state, &server, &temp_path, &path).await?;
-
-    if let Some(previous) = &previous
-        && previous.filename != file.filename
-    {
-        let _ = server_file::delete(
-            &state,
-            &server,
-            format!("{target_dir}/{}", previous.filename),
-        )
-        .await;
-    }
-
-    manifest.upsert(InstalledMod {
-        provider: "modrinth".to_string(),
-        project_id: data.project_id.clone(),
-        project_name: data.project_id.clone(),
-        version_id: version.id.clone(),
-        version_name: version.version_number.clone(),
-        filename: file.filename.clone(),
-        target: data.target,
-        pinned: previous.map(|entry| entry.pinned).unwrap_or(false),
-        sha512: Some(sha512),
-        updated: Some(chrono::Utc::now().to_rfc3339()),
-    });
-    write_manifest(&state, &server, &manifest).await?;
+    write_manifest(&state, &server.0, &manifest).await?;
 
     activity_logger
         .log(
             "server:dev.smto.minecraft.mods.install",
             serde_json::json!({
                 "project_id": data.project_id,
-                "version_id": version.id,
-                "target": target_dir,
-                "file": file.filename,
+                "version_id": entry.version_id,
+                "target": data.target.dir(),
+                "file": entry.filename,
             }),
         )
         .await;
 
     ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
-}
-
-async fn ensure_client_dir(state: &shared::State, server: &GetServer) -> anyhow::Result<()> {
-    let node = server.node.fetch_cached(&state.database).await?;
-    let api = node.api_client(&state.database).await?;
-
-    // Fails harmlessly when the directory already exists.
-    let _ = api
-        .post_servers_server_files_create_directory(
-            server.uuid,
-            &wings_api::servers_server_files_create_directory::post::RequestBody {
-                root: "automodpack/host-modpack/main".into(),
-                name: "mods".into(),
-            },
-        )
-        .await;
-
-    Ok(())
 }
 
 #[derive(ToSchema, Deserialize)]
@@ -538,19 +456,19 @@ pub async fn uninstall(
 ) -> ApiResponseResult {
     permissions.has_server_permission("minecraft-mods.update")?;
 
-    let mut manifest = read_manifest(&state, &server).await?;
+    let mut manifest = read_manifest(&state, &server.0).await?;
     let entry = manifest
         .remove(&data.project_id, data.target)
         .ok_or_else(|| ApiResponse::error("this mod is not managed by the extension"))?;
 
     server_file::delete(
         &state,
-        &server,
+        &server.0,
         format!("{}/{}", data.target.dir(), entry.filename),
     )
     .await?;
 
-    write_manifest(&state, &server, &manifest).await?;
+    write_manifest(&state, &server.0, &manifest).await?;
 
     activity_logger
         .log(
@@ -565,13 +483,229 @@ pub async fn uninstall(
     ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
 }
 
+#[derive(ToSchema, Serialize)]
+pub struct UpdateAvailableResponse {
+    pub project_id: String,
+    pub target: Target,
+    pub current: String,
+    pub latest: String,
+    pub version_id: String,
+}
+
+#[utoipa::path(get, path = "/updates", responses(
+    (status = OK, body = inline(Vec<UpdateAvailableResponse>)),
+    (status = UNAUTHORIZED, body = ApiError),
+    (status = FORBIDDEN, body = ApiError),
+), params(
+    (
+        "server" = uuid::Uuid,
+        description = "The server ID",
+        example = "123e4567-e89b-12d3-a456-426614174000",
+    ),
+))]
+pub async fn updates(
+    state: GetState,
+    permissions: GetPermissionManager,
+    server: GetServer,
+) -> ApiResponseResult {
+    permissions.has_server_permission("minecraft-mods.read")?;
+
+    let manifest = read_manifest(&state, &server.0).await?;
+    let available = manager::check_updates(&state, &server.0, &manifest).await;
+
+    ApiResponse::new_serialized(
+        available
+            .into_iter()
+            .map(|entry| UpdateAvailableResponse {
+                project_id: entry.project_id,
+                target: entry.target,
+                current: entry.current,
+                latest: entry.latest,
+                version_id: entry.version_id,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .ok()
+}
+
+#[derive(ToSchema, Deserialize)]
+pub struct PinRequest {
+    pub project_id: String,
+    pub target: Target,
+    pub pinned: bool,
+}
+
+#[utoipa::path(post, path = "/pin", request_body = PinRequest, responses(
+    (status = OK, body = inline(ModsResponse)),
+    (status = UNAUTHORIZED, body = ApiError),
+    (status = FORBIDDEN, body = ApiError),
+    (status = NOT_FOUND, body = ApiError),
+), params(
+    (
+        "server" = uuid::Uuid,
+        description = "The server ID",
+        example = "123e4567-e89b-12d3-a456-426614174000",
+    ),
+))]
+pub async fn pin(
+    state: GetState,
+    permissions: GetPermissionManager,
+    server: GetServer,
+    axum::Json(data): axum::Json<PinRequest>,
+) -> ApiResponseResult {
+    permissions.has_server_permission("minecraft-mods.update")?;
+
+    let mut manifest = read_manifest(&state, &server.0).await?;
+
+    let Some(entry) = manifest
+        .mods
+        .iter_mut()
+        .find(|entry| entry.project_id == data.project_id && entry.target == data.target)
+    else {
+        return ApiResponse::error("this mod is not managed by the extension").ok();
+    };
+
+    entry.pinned = data.pinned;
+    write_manifest(&state, &server.0, &manifest).await?;
+
+    ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
+}
+
+#[derive(ToSchema, Deserialize)]
+pub struct UpdateRequest {
+    /// Omitted updates every unpinned mod.
+    pub project_id: Option<String>,
+    pub target: Option<Target>,
+}
+
+#[derive(ToSchema, Serialize)]
+pub struct UpdateResponse {
+    pub updated: Vec<UpdateEntryResponse>,
+    pub mods: ModsResponse,
+}
+
+#[derive(ToSchema, Serialize)]
+pub struct UpdateEntryResponse {
+    pub project_id: String,
+    pub target: Target,
+    pub from: String,
+    pub to: String,
+}
+
+#[utoipa::path(post, path = "/update", request_body = UpdateRequest, responses(
+    (status = OK, body = inline(UpdateResponse)),
+    (status = UNAUTHORIZED, body = ApiError),
+    (status = FORBIDDEN, body = ApiError),
+    (status = BAD_REQUEST, body = ApiError),
+), params(
+    (
+        "server" = uuid::Uuid,
+        description = "The server ID",
+        example = "123e4567-e89b-12d3-a456-426614174000",
+    ),
+))]
+pub async fn update(
+    state: GetState,
+    permissions: GetPermissionManager,
+    server: GetServer,
+    activity_logger: GetServerActivityLogger,
+    axum::Json(data): axum::Json<UpdateRequest>,
+) -> ApiResponseResult {
+    permissions.has_server_permission("minecraft-mods.update")?;
+
+    let mut manifest = read_manifest(&state, &server.0).await?;
+
+    let reports = match (&data.project_id, data.target) {
+        (Some(project_id), Some(target)) => {
+            match manager::update_one(&state, &server, &mut manifest, project_id, target).await {
+                Ok(Some(report)) => vec![report],
+                Ok(None) => Vec::new(),
+                Err(err) => return ApiResponse::error(err.to_string()).ok(),
+            }
+        }
+        (None, _) => {
+            manager::update_all(&state, &server, &mut manifest)
+                .await
+                .map_err(|err| ApiResponse::error(err.to_string()))?
+        }
+        (Some(_), None) => {
+            return ApiResponse::error("target is required when updating a single mod").ok();
+        }
+    };
+
+    if !reports.is_empty() {
+        write_manifest(&state, &server.0, &manifest).await?;
+
+        activity_logger
+            .log(
+                "server:dev.smto.minecraft.mods.update",
+                serde_json::json!({
+                    "mods": reports
+                        .iter()
+                        .map(|report| format!("{} {} -> {}", report.project_id, report.from, report.to))
+                        .collect::<Vec<_>>(),
+                }),
+            )
+            .await;
+    }
+
+    ApiResponse::new_serialized(UpdateResponse {
+        updated: reports
+            .into_iter()
+            .map(|report| UpdateEntryResponse {
+                project_id: report.project_id,
+                target: report.target,
+                from: report.from,
+                to: report.to,
+            })
+            .collect(),
+        mods: ModsResponse::new(&manifest),
+    })
+    .ok()
+}
+
+#[derive(ToSchema, Deserialize)]
+pub struct AutoUpdateRequest {
+    pub enabled: bool,
+}
+
+#[utoipa::path(post, path = "/auto-update", request_body = AutoUpdateRequest, responses(
+    (status = OK, body = inline(ModsResponse)),
+    (status = UNAUTHORIZED, body = ApiError),
+    (status = FORBIDDEN, body = ApiError),
+), params(
+    (
+        "server" = uuid::Uuid,
+        description = "The server ID",
+        example = "123e4567-e89b-12d3-a456-426614174000",
+    ),
+))]
+pub async fn set_auto_update(
+    state: GetState,
+    permissions: GetPermissionManager,
+    server: GetServer,
+    axum::Json(data): axum::Json<AutoUpdateRequest>,
+) -> ApiResponseResult {
+    permissions.has_server_permission("minecraft-mods.update")?;
+
+    let mut manifest = read_manifest(&state, &server.0).await?;
+    manifest.auto_update = data.enabled;
+    write_manifest(&state, &server.0, &manifest).await?;
+
+    ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
+}
+
 pub fn router(state: &shared::State) -> OpenApiRouter<shared::State> {
     OpenApiRouter::new()
         .routes(routes!(list))
         .routes(routes!(search))
         .routes(routes!(versions))
+        .routes(routes!(updates))
         .routes(routes!(set_detection))
         .routes(routes!(install))
         .routes(routes!(uninstall))
+        .routes(routes!(pin))
+        .routes(routes!(update))
+        .routes(routes!(set_auto_update))
         .with_state(state.clone())
 }

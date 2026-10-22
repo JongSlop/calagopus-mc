@@ -1,9 +1,9 @@
 //! Reading and writing files of a server through wings.
 
-use shared::models::server::GetServer;
+use shared::models::server::Server;
 use tokio::io::AsyncReadExt;
 
-pub async fn read(state: &shared::State, server: &GetServer, file: &str) -> anyhow::Result<String> {
+pub async fn read(state: &shared::State, server: &Server, file: &str) -> anyhow::Result<String> {
     let node = server.node.fetch_cached(&state.database).await?;
     let api = node.api_client(&state.database).await?;
 
@@ -26,7 +26,7 @@ pub async fn read(state: &shared::State, server: &GetServer, file: &str) -> anyh
 /// Returns `None` when the file does not exist.
 pub async fn read_optional(
     state: &shared::State,
-    server: &GetServer,
+    server: &Server,
     file: &str,
 ) -> anyhow::Result<Option<String>> {
     let node = server.node.fetch_cached(&state.database).await?;
@@ -55,7 +55,7 @@ pub async fn read_optional(
     Ok(Some(contents))
 }
 
-pub async fn write(state: &shared::State, server: &GetServer, file: &str, contents: String) -> anyhow::Result<()> {
+pub async fn write(state: &shared::State, server: &Server, file: &str, contents: String) -> anyhow::Result<()> {
     let node = server.node.fetch_cached(&state.database).await?;
     let api = node.api_client(&state.database).await?;
 
@@ -74,7 +74,7 @@ pub async fn write(state: &shared::State, server: &GetServer, file: &str, conten
 
 pub async fn write_bytes(
     state: &shared::State,
-    server: &GetServer,
+    server: &Server,
     file: &str,
     bytes: Vec<u8>,
 ) -> anyhow::Result<()> {
@@ -96,7 +96,7 @@ pub async fn write_bytes(
 
 pub async fn rename(
     state: &shared::State,
-    server: &GetServer,
+    server: &Server,
     from: &str,
     to: &str,
 ) -> anyhow::Result<()> {
@@ -118,7 +118,7 @@ pub async fn rename(
     Ok(())
 }
 
-pub async fn delete(state: &shared::State, server: &GetServer, file: String) -> anyhow::Result<()> {
+pub async fn delete(state: &shared::State, server: &Server, file: String) -> anyhow::Result<()> {
     let node = server.node.fetch_cached(&state.database).await?;
     let api = node.api_client(&state.database).await?;
 
@@ -137,7 +137,7 @@ pub async fn delete(state: &shared::State, server: &GetServer, file: String) -> 
 /// Sends console commands, ignoring failures when the server is not running.
 pub async fn send_commands(
     state: &shared::State,
-    server: &GetServer,
+    server: &Server,
     commands: Vec<String>,
 ) -> anyhow::Result<()> {
     let node = server.node.fetch_cached(&state.database).await?;
@@ -154,7 +154,7 @@ pub async fn send_commands(
     Ok(())
 }
 
-async fn is_running(state: &shared::State, server: &GetServer) -> anyhow::Result<bool> {
+async fn is_running(state: &shared::State, server: &Server) -> anyhow::Result<bool> {
     let node = server.node.fetch_cached(&state.database).await?;
     let api = node.api_client(&state.database).await?;
 
@@ -164,7 +164,7 @@ async fn is_running(state: &shared::State, server: &GetServer) -> anyhow::Result
 
 /// Reloads the whitelist on a running server. A stopped server reads the file on
 /// the next start, so nothing has to happen there.
-pub async fn reload_whitelist(state: &shared::State, server: &GetServer) -> anyhow::Result<()> {
+pub async fn reload_whitelist(state: &shared::State, server: &Server) -> anyhow::Result<()> {
     if is_running(state, server).await.unwrap_or(false) {
         send_commands(state, server, vec!["whitelist reload".to_string()]).await?;
     }

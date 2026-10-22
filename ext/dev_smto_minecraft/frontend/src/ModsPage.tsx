@@ -1,6 +1,6 @@
 import { faDownload, faMagnifyingGlass, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { ActionIcon, Alert, Badge, Image, Loader, Select, Table } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Image, Loader, Select, Switch, Table } from '@mantine/core';
 import { useEffect, useState } from 'react';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
@@ -33,7 +33,20 @@ interface Detection {
 
 interface ModsResponse {
   detection: Detection;
+  auto_update: boolean;
   mods: InstalledMod[];
+}
+
+interface UpdateResponse {
+  updated: { project_id: string }[];
+  mods: ModsResponse;
+}
+
+interface UpdateAvailable {
+  project_id: string;
+  target: Target;
+  current: string;
+  latest: string;
 }
 
 interface SearchHit {
@@ -57,6 +70,8 @@ export default function ModsPage() {
   const { addToast } = useToast();
 
   const [mods, setMods] = useState<InstalledMod[]>([]);
+  const [autoUpdate, setAutoUpdate] = useState(false);
+  const [updates, setUpdates] = useState<UpdateAvailable[] | null>(null);
   const [loader, setLoader] = useState<Loader | null>(null);
   const [mcVersion, setMcVersion] = useState('');
   const [loading, setLoading] = useState(true);
@@ -68,9 +83,13 @@ export default function ModsPage() {
 
   const apply = (data: ModsResponse) => {
     setMods(data.mods);
+    setAutoUpdate(data.auto_update);
     setLoader(data.detection.loader);
     setMcVersion(data.detection.mc_version ?? '');
   };
+
+  const updateFor = (mod: InstalledMod) =>
+    updates?.find((entry) => entry.project_id === mod.project_id && entry.target === mod.target);
 
   useEffect(() => {
     setLoading(true);
@@ -136,6 +155,52 @@ export default function ModsPage() {
       .finally(() => setBusy(false));
   };
 
+  const setPinned = (mod: InstalledMod, pinned: boolean) => {
+    setBusy(true);
+    axiosInstance
+      .post<ModsResponse>(`${endpoint(serverUuid)}/pin`, { project_id: mod.project_id, target: mod.target, pinned })
+      .then(({ data }) => apply(data))
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const setAutoUpdateFlag = (enabled: boolean) => {
+    setBusy(true);
+    axiosInstance
+      .post<ModsResponse>(`${endpoint(serverUuid)}/auto-update`, { enabled })
+      .then(({ data }) => {
+        apply(data);
+        addToast(enabled ? 'Auto update enabled.' : 'Auto update disabled.', 'success');
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const checkUpdates = () => {
+    setBusy(true);
+    axiosInstance
+      .get<UpdateAvailable[]>(`${endpoint(serverUuid)}/updates`)
+      .then(({ data }) => setUpdates(data))
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
+  const updateMod = (mod?: InstalledMod) => {
+    setBusy(true);
+    axiosInstance
+      .post<UpdateResponse>(`${endpoint(serverUuid)}/update`, mod ? { project_id: mod.project_id, target: mod.target } : {})
+      .then(({ data }) => {
+        apply(data.mods);
+        setUpdates(null);
+        addToast(
+          data.updated.length ? `${data.updated.length} mod(s) updated.` : 'Everything is current.',
+          'success',
+        );
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setBusy(false));
+  };
+
   return (
     <ServerContentContainer title='Mods'>
       <Stack>
@@ -167,6 +232,12 @@ export default function ModsPage() {
             <Button mt={22} variant='default' onClick={saveDetection} loading={busy}>
               Save
             </Button>
+            <Switch
+              mt={22}
+              label='Auto update while offline'
+              checked={autoUpdate}
+              onChange={(event) => setAutoUpdateFlag(event.currentTarget.checked)}
+            />
           </Group>
         </TitleCard>
 
@@ -182,6 +253,7 @@ export default function ModsPage() {
                   <Table.Th>Mod</Table.Th>
                   <Table.Th>Version</Table.Th>
                   <Table.Th>Installed in</Table.Th>
+                  <Table.Th>Pinned</Table.Th>
                   <Table.Th />
                 </Table.Tr>
               </Table.Thead>
@@ -195,16 +267,42 @@ export default function ModsPage() {
                     <Table.Td>
                       <Badge variant='light'>{targetLabel(mod.target)}</Badge>
                     </Table.Td>
-                    <Table.Td w={60}>
-                      <ActionIcon color='red' variant='subtle' onClick={() => uninstall(mod)}>
-                        <FontAwesomeIcon icon={faTrashCan} />
-                      </ActionIcon>
+                    <Table.Td>
+                      <Switch checked={mod.pinned} onChange={(event) => setPinned(mod, event.currentTarget.checked)} />
+                    </Table.Td>
+                    <Table.Td w={120}>
+                      <Group gap='xs' wrap='nowrap'>
+                        {updateFor(mod) && (
+                          <Button size='xs' variant='light' onClick={() => updateMod(mod)}>
+                            {updateFor(mod)?.latest}
+                          </Button>
+                        )}
+                        <ActionIcon color='red' variant='subtle' onClick={() => uninstall(mod)}>
+                          <FontAwesomeIcon icon={faTrashCan} />
+                        </ActionIcon>
+                      </Group>
                     </Table.Td>
                   </Table.Tr>
                 ))}
               </Table.Tbody>
             </Table>
           )}
+
+          <Group mt='md'>
+            <Button variant='default' onClick={checkUpdates} loading={busy}>
+              Check for updates
+            </Button>
+            <Button variant='default' onClick={() => updateMod()} loading={busy}>
+              Update all
+            </Button>
+            {updates && (
+              <span>
+                {updates.length === 0
+                  ? 'Everything is current.'
+                  : `${updates.length} update(s) available.`}
+              </span>
+            )}
+          </Group>
         </TitleCard>
 
         <TitleCard title='Find mods'>

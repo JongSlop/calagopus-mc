@@ -25,3 +25,4 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+croner = { workspace = true }

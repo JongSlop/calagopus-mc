@@ -65,7 +65,7 @@ mod get {
     ) -> ApiResponseResult {
         permissions.has_server_permission("minecraft-properties.read")?;
 
-        let content = server_file::read(&state, &server, FILE).await?;
+        let content = server_file::read(&state, &server.0, FILE).await?;
 
         ApiResponse::new_serialized(PropertiesResponse::new(content)).ok()
     }
@@ -120,7 +120,7 @@ mod put {
             }
         }
 
-        let content = server_file::read(&state, &server, FILE).await?;
+        let content = server_file::read(&state, &server.0, FILE).await?;
         let mut properties = Properties::parse(&content);
 
         let mut changed = Vec::new();
@@ -141,7 +141,7 @@ mod put {
         }
 
         let rendered = properties.render();
-        server_file::write(&state, &server, FILE, rendered.clone()).await?;
+        server_file::write(&state, &server.0, FILE, rendered.clone()).await?;
 
         activity_logger
             .log(
