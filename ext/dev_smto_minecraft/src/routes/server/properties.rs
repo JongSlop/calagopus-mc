@@ -7,11 +7,10 @@ use shared::{
     },
     response::{ApiResponse, ApiResponseResult},
 };
-use tokio::io::AsyncReadExt;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use crate::properties::Properties;
+use crate::{properties::Properties, server_file};
 
 const FILE: &str = "server.properties";
 
@@ -44,47 +43,6 @@ impl PropertiesResponse {
     }
 }
 
-async fn read_file(state: &shared::State, server: &GetServer) -> anyhow::Result<String> {
-    let node = server.node.fetch_cached(&state.database).await?;
-    let api = node.api_client(&state.database).await?;
-
-    let mut reader = api
-        .get_servers_server_files_contents(
-            server.uuid,
-            &wings_api::servers_server_files_contents::get::Query {
-                file: Some(FILE.into()),
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    let mut contents = String::new();
-    reader.read_to_string(&mut contents).await?;
-
-    Ok(contents)
-}
-
-async fn write_file(
-    state: &shared::State,
-    server: &GetServer,
-    contents: String,
-) -> anyhow::Result<()> {
-    let node = server.node.fetch_cached(&state.database).await?;
-    let api = node.api_client(&state.database).await?;
-
-    api.post_servers_server_files_write(
-        server.uuid,
-        wings_api::client::AsyncRequestReader::new(std::io::Cursor::new(contents.into_bytes())),
-        &wings_api::servers_server_files_write::post::Query {
-            file: Some(FILE.into()),
-            ..Default::default()
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 mod get {
     use super::*;
 
@@ -107,7 +65,7 @@ mod get {
     ) -> ApiResponseResult {
         permissions.has_server_permission("minecraft-properties.read")?;
 
-        let content = read_file(&state, &server).await?;
+        let content = server_file::read(&state, &server, FILE).await?;
 
         ApiResponse::new_serialized(PropertiesResponse::new(content)).ok()
     }
@@ -162,7 +120,7 @@ mod put {
             }
         }
 
-        let content = read_file(&state, &server).await?;
+        let content = server_file::read(&state, &server, FILE).await?;
         let mut properties = Properties::parse(&content);
 
         let mut changed = Vec::new();
@@ -183,7 +141,7 @@ mod put {
         }
 
         let rendered = properties.render();
-        write_file(&state, &server, rendered.clone()).await?;
+        server_file::write(&state, &server, FILE, rendered.clone()).await?;
 
         activity_logger
             .log(
