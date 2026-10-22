@@ -20,6 +20,7 @@ pub fn mod_loader_id(loader: &str) -> u32 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Mod {
     pub id: u32,
     pub name: String,
@@ -27,31 +28,30 @@ pub struct Mod {
     pub summary: String,
     #[serde(default)]
     pub logo: Option<Logo>,
-    #[serde(default)]
-    pub downloads: DownloadCount,
+    /// Search returns `{"downloads": {"total": N}}`, a single mod returns
+    /// `{"downloadCount": N}`. Keep both shapes and read the number out.
+    #[serde(default, alias = "downloads", alias = "downloadCount")]
+    pub downloads: serde_json::Value,
     #[serde(default)]
     pub links: Links,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Logo {
-    #[serde(default)]
+    #[serde(default, rename = "thumbnailUrl")]
     pub thumbnail_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct DownloadCount {
-    #[serde(default)]
-    pub total: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Links {
-    #[serde(default)]
+    #[serde(default, rename = "websiteUrl")]
     pub website_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct File {
     pub id: u32,
     pub mod_id: u32,
@@ -68,12 +68,14 @@ pub struct File {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileHash {
     pub value: String,
     pub algo: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileDependency {
     pub mod_id: u32,
     pub relation_type: u32,
@@ -86,8 +88,25 @@ impl FileDependency {
     }
 }
 
+impl Mod {
+    pub fn download_total(&self) -> u64 {
+        self.downloads
+            .get("total")
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| self.downloads.as_u64())
+            .unwrap_or(0)
+    }
+}
+
 impl File {
     /// CurseForge uses algo 1 for sha1 and 2 for md5.
+    pub fn sha1(&self) -> Option<&str> {
+        self.hashes
+            .iter()
+            .find(|hash| hash.algo == 1)
+            .map(|hash| hash.value.as_str())
+    }
+
     pub fn has_download(&self) -> bool {
         self.download_url.is_some()
     }

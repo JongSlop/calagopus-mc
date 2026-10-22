@@ -150,6 +150,13 @@ pub async fn download(url: &str, max_bytes: u64) -> anyhow::Result<(Vec<u8>, Str
     Ok((bytes.to_vec(), hex::encode(Sha512::digest(&bytes))))
 }
 
+/// sha1 hex of a file, used by CurseForge which does not publish sha512.
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+
+    hex::encode(Sha1::digest(bytes))
+}
+
 /// A directory entry as returned by wings, reduced to what detection needs.
 pub struct DirEntry {
     pub name: String,

@@ -11,7 +11,7 @@ docker_images:
   Java 17: ghcr.io/pterodactyl/yolks:java_17
 file_denylist: []
 startup_commands:
-  Default: java -Xms128M -XX:MaxRAMPercentage=95.0 -Duser.home=/home/container -jar {{SERVER_JARFILE}} nogui
+  Default: java -Xms128M -Xmx2G -Duser.home=/home/container -jar {{SERVER_JARFILE}} nogui
 force_outgoing_ip: false
 separate_port: false
 config:

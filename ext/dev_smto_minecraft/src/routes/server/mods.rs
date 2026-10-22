@@ -314,17 +314,21 @@ pub async fn search(
             .await
             .map_err(|err| ApiResponse::error(err.to_string()))?
             .into_iter()
-            .map(|hit| SearchHitResponse {
+            .map(|hit| {
+                let downloads = hit.download_total();
+
+                SearchHitResponse {
                 project_id: hit.id.to_string(),
                 slug: hit.slug,
                 title: hit.name,
                 description: hit.summary,
+                downloads,
                 icon_url: Some(hit.logo.map(|logo| logo.thumbnail_url).unwrap_or_default()),
-                downloads: hit.downloads.total,
                 // CurseForge does not report per-side support in search results.
                 client_side: "unknown".to_string(),
                 server_side: "unknown".to_string(),
                 suggested_target: Target::Server,
+            }
             })
             .collect::<Vec<_>>()
         }

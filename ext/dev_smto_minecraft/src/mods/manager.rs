@@ -60,6 +60,8 @@ struct ResolvedFile {
     version_id: String,
     /// sha512 hex, when the provider gives us one to verify.
     sha512: Option<String>,
+    /// sha1 hex, when the provider only offers that.
+    sha1: Option<String>,
     /// Required dependency project ids.
     dependencies: Vec<String>,
 }
@@ -115,6 +117,7 @@ async fn resolve(
                 version_name: version.version_number,
                 version_id: version.id,
                 sha512,
+                sha1: None,
                 dependencies,
             })
         }
@@ -144,6 +147,8 @@ async fn resolve(
                 )
             })?;
 
+            let sha1 = file.sha1().map(str::to_string);
+
             let dependencies = file
                 .dependencies
                 .iter()
@@ -157,6 +162,7 @@ async fn resolve(
                 version_name: file.display_name,
                 version_id: file.id.to_string(),
                 sha512: None,
+                sha1,
                 dependencies,
             })
         }
@@ -201,6 +207,12 @@ pub async fn install_one(
         anyhow::bail!("the downloaded file for {project_id} failed hash verification");
     }
 
+    if let Some(expected) = &resolved.sha1
+        && !expected.eq_ignore_ascii_case(&crate::mods::sha1_hex(&bytes))
+    {
+        anyhow::bail!("the downloaded file for {project_id} failed hash verification");
+    }
+
     let target_dir = target.dir();
 
     if target == Target::Client {
@@ -213,6 +225,14 @@ pub async fn install_one(
     let temp_path = format!("{target_dir}/.smto-{}.tmp", uuid::Uuid::new_v4());
     server_file::write_bytes(state, server, &temp_path, bytes).await?;
     server_file::rename(state, server, &temp_path, &path).await?;
+
+    // Another provider entry may own the same file name, drop it so the manifest has
+    // exactly one owner per file.
+    manifest.mods.retain(|entry| {
+        !(entry.target == target
+            && entry.filename == resolved.filename
+            && !(entry.project_id == project_id && provider_of(entry) == provider))
+    });
 
     if let Some(previous) = &previous
         && previous.filename != resolved.filename
@@ -294,7 +314,10 @@ async fn project_name_for(state: &State, provider: Provider, project_id: &str) -
         },
     };
 
-    name.unwrap_or_else(|_| project_id.to_string())
+    name.unwrap_or_else(|err| {
+        warn!(provider = provider.as_str(), project_id, "cannot look up project name: {err:#}");
+        project_id.to_string()
+    })
 }
 
 fn provider_of(entry: &InstalledMod) -> Provider {
