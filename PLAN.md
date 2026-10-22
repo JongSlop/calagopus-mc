@@ -98,6 +98,21 @@ Done in dev: extension listed, applied, route reachable at
 | CurseForge rate limits and blocked downloads | Cache responses. Show a clear "manual download needed" state. |
 | Wrong loader or version pulls a crashing mod | Strict loader/version filters. Test on 1.20.1 and 1.21.1 for Fabric and NeoForge. |
 
+## Status
+
+- M0 done: dev stack in `dev/`, extension installs into a panel built from source,
+  `panel-rs extensions export dev.smto.minecraft` produces the install zip.
+- M1 done: `server.properties` editor with typed inputs (switch, numbers, text) and
+  `` § `` colour codes written as `\u00a7` escapes.
+- M2 done: whitelist editor, Mojang lookup on online-mode servers, offline UUIDs
+  otherwise, `whitelist reload` sent to a running server.
+- M3 done: Modrinth and CurseForge search, install to `/mods` or the AutoModpack
+  host modpack directory with sha512 verification and atomic rename, required
+  dependencies installed one level deep, pinning, single and bulk updates, and a
+  six-hour cron task that only touches jars while a server is offline.
+- Open: verify on a real host (the macOS dev box cannot keep the game container
+  running), CurseForge key from the user, Forge (non-Neo) end-to-end check.
+
 ## Open questions
 
 - Own CurseForge API key: user will provide it.
