@@ -1,0 +1,24 @@
+# dev stack state
+dev/postgres/
+dev/wings/data/
+dev/wings/config/
+!dev/wings/config/.gitkeep
+dev/data/
+dev/build/binaries/
+dev/build/extensions/
+dev/build/translations/
+dev/build/extension-migrations/*
+!dev/build/extension-migrations/.gitkeep
+dev/exported-extensions/
+
+# rust
+ext/*/target/
+ext/*/../../target/
+
+# node
+node_modules/
+dist/
+*.log
+
+# macos
+.DS_Store

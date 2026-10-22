@@ -1,0 +1,62 @@
+services:
+  web:
+    image: ghcr.io/calagopus/panel:heavy
+    # The heavy image's supervisor builds and picks its own cached binary, which ignores
+    # manually applied extensions. For dev, run the source build directly instead.
+    # Build with: docker compose exec web sh -c 'cd /app/repo && panel-rs extensions apply -p dev'
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cd /app/repo && panel-rs extensions resync >/dev/null && { test -x target/debug/panel-rs || cargo build --profile dev --bin panel-rs; } && exec ./target/debug/panel-rs"]
+    environment:
+      - REDIS_URL=redis://cache
+      - DATABASE_URL=postgresql://panel:panel@db/panel
+      - DATABASE_MIGRATE=true
+      - PORT=8000
+      - APP_DEBUG=true
+      - APP_PRIMARY=true
+      - APP_ENCRYPTION_KEY=devdevdevdevdevdevdevdevdevdev12
+    volumes:
+      - ./data:/var/lib/calagopus
+      - ./build/binaries:/app/binaries
+      - ./build/translations:/app/translations
+      - ./build/extensions:/app/extensions
+      - ./build/extension-migrations:/app/repo/database/extension-migrations
+      # live extension source, so edits on the host land in the container
+      - ../ext/dev_smto_minecraft:/app/repo/backend-extensions/dev_smto_minecraft
+      - ../ext/dev_smto_minecraft/migrations:/app/repo/database/extension-migrations/dev_smto_minecraft
+      - ../ext/dev_smto_minecraft/frontend:/app/repo/frontend/extensions/dev_smto_minecraft
+    ports:
+      - 127.0.0.1:8000:8000
+    depends_on:
+      - db
+      - cache
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_USER=panel
+      - POSTGRES_PASSWORD=panel
+      - POSTGRES_DB=panel
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+
+  cache:
+    image: valkey/valkey:8-alpine
+
+  wings:
+    image: ghcr.io/calagopus/wings:latest
+    restart: unless-stopped
+    environment:
+      - WINGS_UID=988
+      - WINGS_GID=988
+      - WINGS_USERNAME=calagopus
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./wings/config:/etc/calagopus-wings
+      - ./wings/data:/var/lib/calagopus-wings
+    ports:
+      - 8080:8080
+      - 2022:2022
+      - 25565:25565
+    depends_on:
+      - web
+
