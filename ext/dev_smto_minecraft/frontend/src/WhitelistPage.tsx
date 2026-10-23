@@ -22,6 +22,12 @@ interface WhitelistResponse {
   online_mode: boolean;
 }
 
+/// Skin head from mc-heads. The name resolves to the current skin, the UUID is the
+/// fallback for a player who renamed since the whitelist entry was written.
+const headUrl = (entry: WhitelistEntry) => `https://mc-heads.net/avatar/${entry.name}/32`;
+
+const uuidHeadUrl = (entry: WhitelistEntry) => `https://mc-heads.net/avatar/${entry.uuid}/32`;
+
 const endpoint = (serverUuid: string) => `/api/client/servers/${serverUuid}/dev.smto.minecraft/whitelist`;
 
 export default function WhitelistPage() {
@@ -150,7 +156,23 @@ export default function WhitelistPage() {
             <Table.Tbody>
               {entries.map((entry) => (
                 <Table.Tr key={entry.name}>
-                  <Table.Td>{entry.name}</Table.Td>
+                  <Table.Td>
+                    <Group gap='xs'>
+                      <img
+                        src={headUrl(entry)}
+                        alt=''
+                        width={28}
+                        height={28}
+                        style={{ borderRadius: 4, imageRendering: 'pixelated' }}
+                        onError={(event) => {
+                          if (entry.uuid) {
+                            event.currentTarget.src = uuidHeadUrl(entry);
+                          }
+                        }}
+                      />
+                      {entry.name}
+                    </Group>
+                  </Table.Td>
                   <Table.Td>
                     <code>{entry.uuid ?? 'resolved on save'}</code>
                   </Table.Td>
