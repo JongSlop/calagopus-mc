@@ -5,6 +5,7 @@
 //! panel database, so it travels with the server on transfers and restores and does
 //! not tie the extension to a database schema.
 
+pub mod adopt;
 pub mod curseforge;
 pub mod manager;
 pub mod modrinth;
@@ -33,7 +34,7 @@ impl Loader {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Target {
     /// `/mods`: loaded by the server and also synced to players by AutoModpack.
@@ -199,6 +200,29 @@ fn neoforge_mc_version(version: &str) -> Option<String> {
 
 /// Works out loader and Minecraft version from the files on disk. Anything it cannot
 /// see can be overridden by the user and is stored in the manifest.
+/// Minecraft version from a `versions/<version>` directory name, if there is one.
+pub fn detect_from_versions(entries: &[DirEntry]) -> Option<String> {
+    entries
+        .iter()
+        .find(|entry| entry.directory && is_mc_version(&entry.name))
+        .map(|entry| entry.name.clone())
+}
+
+fn is_mc_version(name: &str) -> bool {
+    let mut parts = name.split('.');
+
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+
+    major == "1"
+        && minor.parse::<u8>().is_ok()
+        && parts.all(|part| part.parse::<u8>().is_ok())
+}
+
 pub fn detect(entries: &[DirEntry]) -> Detection {
     let mut detection = Detection::default();
 
@@ -206,6 +230,13 @@ pub fn detect(entries: &[DirEntry]) -> Detection {
         let name = entry.name.to_lowercase();
 
         if entry.directory {
+            // Fabric keeps its launcher jars in .fabric, whatever the start jar is called.
+            if name == ".fabric" {
+                detection.loader.get_or_insert(Loader::Fabric);
+            }
+            if name == ".neoforge" {
+                detection.loader.get_or_insert(Loader::NeoForge);
+            }
             continue;
         }
 
@@ -268,6 +299,39 @@ mod tests {
             name: name.to_string(),
             directory: false,
         }
+    }
+
+    #[test]
+    fn detects_fabric_from_directory() {
+        let detection = detect(&[
+            DirEntry {
+                name: ".fabric".into(),
+                directory: true,
+            },
+            DirEntry {
+                name: "server.jar".into(),
+                directory: false,
+            },
+        ]);
+
+        assert_eq!(detection.loader, Some(Loader::Fabric));
+    }
+
+    #[test]
+    fn reads_version_from_versions_directory() {
+        let entries = [
+            DirEntry {
+                name: "1.21.1".into(),
+                directory: true,
+            },
+            DirEntry {
+                name: "latest".into(),
+                directory: true,
+            },
+        ];
+
+        assert_eq!(detect_from_versions(&entries), Some("1.21.1".to_string()));
+        assert_eq!(detect_from_versions(&[]), None);
     }
 
     #[test]

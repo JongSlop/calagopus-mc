@@ -91,6 +91,14 @@ async fn resolve(
     let mc_version = manifest.detection.mc_version.clone();
     let mc_version = mc_version.as_deref();
 
+    // Without both, a provider returns whatever file is newest, which can be the wrong
+    // loader or the wrong Minecraft version. Refuse rather than install something broken.
+    if loader.is_none() || mc_version.is_none() {
+        anyhow::bail!(
+            "the loader and Minecraft version are not set yet, choose them in the 'Loader and version' tab first"
+        );
+    }
+
     match provider {
         Provider::Modrinth => {
             let version = match version_id {

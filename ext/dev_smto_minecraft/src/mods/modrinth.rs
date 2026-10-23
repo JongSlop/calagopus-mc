@@ -154,3 +154,52 @@ pub async fn version(version_id: &str) -> anyhow::Result<Version> {
         .json::<Version>()
         .await?)
 }
+
+/// Looks up versions by file hash, in one request. Modrinth accepts sha512, sha1 or md5.
+pub async fn versions_by_hashes(
+    hashes: &[String],
+) -> anyhow::Result<std::collections::HashMap<String, Version>> {
+    if hashes.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    Ok(client()
+        .post(format!("{BASE}/version_files"))
+        .json(&serde_json::json!({ "hashes": hashes, "algorithm": "sha512" }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<std::collections::HashMap<String, Version>>()
+        .await?)
+}
+
+/// Project titles for a batch of ids, in one request.
+pub async fn project_titles(
+    ids: &[String],
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    #[derive(Deserialize)]
+    struct Project {
+        id: String,
+        title: String,
+    }
+
+    let ids = serde_json::to_string(ids)?;
+
+    let projects = client()
+        .get(format!("{BASE}/projects"))
+        .query(&[("ids", ids)])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<Project>>()
+        .await?;
+
+    Ok(projects
+        .into_iter()
+        .map(|project| (project.id, project.title))
+        .collect())
+}

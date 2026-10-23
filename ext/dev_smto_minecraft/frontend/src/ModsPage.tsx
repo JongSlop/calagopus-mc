@@ -1,4 +1,5 @@
 import {
+  faBoxOpen,
   faClockRotateLeft,
   faCodeBranch,
   faDownload,
@@ -6,9 +7,8 @@ import {
   faTrashCan,
 } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { ActionIcon, Alert, Badge, Image, Loader, Select, Switch, Table } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Image, Loader, Modal, ScrollArea, Select, Switch, Table, Tabs } from '@mantine/core';
 import { useEffect, useState } from 'react';
-import { Modal, Tabs } from '@mantine/core';
 import { axiosInstance, httpErrorToHuman } from '@/api/axios.ts';
 import Button from '@/elements/buttons/Button.tsx';
 import TitleCard from '@/elements/data-display/TitleCard.tsx';
@@ -59,6 +59,19 @@ interface UpdateAvailable {
   target: Target;
   current: string;
   latest: string;
+}
+
+interface AdoptResponse {
+  adopted: {
+    project_name: string;
+    provider: string;
+    version_name: string;
+    filename: string;
+    target: Target;
+  }[];
+  already_tracked: number;
+  unmatched: string[];
+  mods: ModsResponse;
 }
 
 interface VersionOption {
@@ -112,6 +125,8 @@ export default function ModsPage() {
   const [pickerVersions, setPickerVersions] = useState<VersionOption[] | null>(null);
   const [pickedVersion, setPickedVersion] = useState<string | null>(null);
   const [modFilter, setModFilter] = useState('');
+  const [adopting, setAdopting] = useState(false);
+  const [adoptReport, setAdoptReport] = useState<AdoptResponse | null>(null);
   const [targetFilter, setTargetFilter] = useState<'all' | Target>('all');
 
   const apply = (data: ModsResponse) => {
@@ -260,6 +275,18 @@ export default function ModsPage() {
       })
       .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
       .finally(() => setBusy(false));
+  };
+
+  const adopt = () => {
+    setAdopting(true);
+    axiosInstance
+      .post<AdoptResponse>(`${endpoint(serverUuid)}/adopt`)
+      .then(({ data }) => {
+        apply(data.mods);
+        setAdoptReport(data);
+      })
+      .catch((msg) => addToast(httpErrorToHuman(msg), 'error'))
+      .finally(() => setAdopting(false));
   };
 
   const checkUpdates = () => {
@@ -469,6 +496,14 @@ export default function ModsPage() {
             <Button variant='default' onClick={() => updateMod()} loading={busy}>
               Update all
             </Button>
+            <Button
+              variant='default'
+              onClick={adopt}
+              loading={adopting}
+              leftSection={<FontAwesomeIcon icon={faBoxOpen} />}
+            >
+              Adopt existing mods
+            </Button>
             {updates && (
               <span>
                 {updates.length === 0
@@ -563,6 +598,63 @@ export default function ModsPage() {
         </TitleCard>
         </Tabs.Panel>
       </Tabs>
+
+      <Modal
+        opened={!!adoptReport}
+        onClose={() => setAdoptReport(null)}
+        title='Adopt existing mods'
+        size='lg'
+      >
+        {adoptReport && (
+          <Stack>
+            <p>
+              {adoptReport.adopted.length === 0
+                ? 'No new mods were recognised.'
+                : `${adoptReport.adopted.length} mod(s) are now managed by this extension.`}{' '}
+              {adoptReport.already_tracked > 0 &&
+                `${adoptReport.already_tracked} jar(s) were already tracked.`}
+            </p>
+
+            {adoptReport.adopted.length > 0 && (
+              <ScrollArea h={240}>
+                <Table>
+                  <Table.Tbody>
+                    {adoptReport.adopted.map((entry) => (
+                      <Table.Tr key={`${entry.filename}-${entry.target}`}>
+                        <Table.Td>{entry.project_name}</Table.Td>
+                        <Table.Td>
+                          <code>{entry.version_name}</code>
+                        </Table.Td>
+                        <Table.Td>
+                          <Badge variant='light'>{targetLabel(entry.target)}</Badge>
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </ScrollArea>
+            )}
+
+            {adoptReport.unmatched.length > 0 && (
+              <Alert color='yellow' title={`${adoptReport.unmatched.length} jar(s) not recognised`}>
+                These stay on disk and unmanaged. Usually a jar from a source that is not Modrinth
+                or CurseForge, or a file that was modified after download.
+                <ul style={{ marginBottom: 0 }}>
+                  {adoptReport.unmatched.map((name) => (
+                    <li key={name}>
+                      <code>{name}</code>
+                    </li>
+                  ))}
+                </ul>
+              </Alert>
+            )}
+
+            <Group justify='flex-end'>
+              <Button onClick={() => setAdoptReport(null)}>Close</Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
 
       <Modal opened={!!picker} onClose={() => setPicker(null)} title={`Version of ${picker?.title ?? ''}`}>
         {pickerVersions === null ? (

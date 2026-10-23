@@ -219,3 +219,61 @@ pub async fn mod_info(api_key: &str, mod_id: u32) -> anyhow::Result<Mod> {
 
     Ok(response.data)
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FingerprintResponse {
+    data: FingerprintData,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FingerprintData {
+    #[serde(default)]
+    exact_matches: Vec<MatchedFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MatchedFile {
+    file: File,
+}
+
+/// Matches CurseForge fingerprints (murmur2 of the jar) to published files. Files whose
+/// author allows no API downloads still match, they only cannot be downloaded.
+pub async fn match_fingerprints(api_key: &str, fingerprints: &[u32]) -> anyhow::Result<Vec<File>> {
+    if fingerprints.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let response = client(api_key)
+        .post(format!("{BASE}/fingerprints"))
+        .json(&serde_json::json!({ "fingerprints": fingerprints }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<FingerprintResponse>()
+        .await?;
+
+    Ok(response
+        .data
+        .exact_matches
+        .into_iter()
+        .map(|matched| matched.file)
+        .collect())
+}
+
+/// Names for a batch of mods. CurseForge only offers single-mod lookups, so this is one
+/// request per mod; a mod that cannot be read is left out rather than failing the run.
+pub async fn mods(api_key: &str, ids: &[u32]) -> anyhow::Result<Vec<Mod>> {
+    let mut mods = Vec::with_capacity(ids.len());
+
+    for id in ids {
+        match mod_info(api_key, *id).await {
+            Ok(project) => mods.push(project),
+            Err(err) => tracing::warn!(mod_id = id, "cannot look up CurseForge mod: {err:#}"),
+        }
+    }
+
+    Ok(mods)
+}

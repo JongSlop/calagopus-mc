@@ -145,6 +145,32 @@ pub(crate) async fn detect_and_store(
     let detected = mods::detect(&entries);
     let mut changed = false;
 
+    // Fabric installs record the Minecraft version in versions/<version>.
+    if manifest.detection.mc_version.is_none()
+        && let Ok(versions) = api
+            .get_servers_server_files_list_directory(
+                server.uuid,
+                &wings_api::servers_server_files_list_directory::get::Query {
+                    directory: Some("versions".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+    {
+        let versions: Vec<mods::DirEntry> = versions
+            .iter()
+            .map(|entry| mods::DirEntry {
+                name: entry.name.to_string(),
+                directory: entry.directory,
+            })
+            .collect();
+
+        if let Some(mc_version) = mods::detect_from_versions(&versions) {
+            manifest.detection.mc_version = Some(mc_version);
+            changed = true;
+        }
+    }
+
     if manifest.detection.loader.is_none() && detected.loader.is_some() {
         manifest.detection.loader = detected.loader;
         changed = true;
@@ -862,6 +888,82 @@ pub async fn revert(
     ApiResponse::new_serialized(ModsResponse::new(&manifest)).ok()
 }
 
+#[derive(ToSchema, Serialize)]
+pub struct AdoptedModResponse {
+    pub project_name: String,
+    pub provider: String,
+    pub version_name: String,
+    pub filename: String,
+    pub target: Target,
+}
+
+#[derive(ToSchema, Serialize)]
+pub struct AdoptResponse {
+    /// What was added to the manifest by this run.
+    pub adopted: Vec<AdoptedModResponse>,
+    /// Jars already in the manifest, left untouched.
+    pub already_tracked: usize,
+    /// Jars no provider recognises. They stay on disk and unmanaged.
+    pub unmatched: Vec<String>,
+    pub mods: ModsResponse,
+}
+
+#[utoipa::path(post, path = "/adopt", responses(
+    (status = OK, body = inline(AdoptResponse)),
+    (status = UNAUTHORIZED, body = ApiError),
+    (status = FORBIDDEN, body = ApiError),
+    (status = BAD_GATEWAY, body = ApiError),
+), params(
+    (
+        "server" = uuid::Uuid,
+        description = "The server ID",
+        example = "123e4567-e89b-12d3-a456-426614174000",
+    ),
+))]
+pub async fn adopt(
+    state: GetState,
+    permissions: GetPermissionManager,
+    server: GetServer,
+    activity_logger: GetServerActivityLogger,
+) -> ApiResponseResult {
+    permissions.has_server_permission("minecraft-mods.update")?;
+
+    let mut manifest = read_manifest(&state, &server.0).await?;
+    let report = mods::adopt::adopt(&state, &server, &mut manifest).await?;
+
+    if !report.adopted.is_empty() {
+        write_manifest(&state, &server.0, &manifest).await?;
+
+        activity_logger
+            .log(
+                "server:dev.smto.minecraft.mods.adopt",
+                serde_json::json!({
+                    "adopted": report.adopted.len(),
+                    "unmatched": report.unmatched.len(),
+                }),
+            )
+            .await;
+    }
+
+    ApiResponse::new_serialized(AdoptResponse {
+        adopted: report
+            .adopted
+            .into_iter()
+            .map(|entry| AdoptedModResponse {
+                project_name: entry.project_name,
+                provider: entry.provider,
+                version_name: entry.version_name,
+                filename: entry.filename,
+                target: entry.target,
+            })
+            .collect(),
+        already_tracked: report.already_tracked,
+        unmatched: report.unmatched,
+        mods: ModsResponse::new(&manifest),
+    })
+    .ok()
+}
+
 pub fn router(state: &shared::State) -> OpenApiRouter<shared::State> {
     OpenApiRouter::new()
         .routes(routes!(list))
@@ -875,5 +977,6 @@ pub fn router(state: &shared::State) -> OpenApiRouter<shared::State> {
         .routes(routes!(update))
         .routes(routes!(set_auto_update))
         .routes(routes!(revert))
+        .routes(routes!(adopt))
         .with_state(state.clone())
 }

@@ -107,6 +107,12 @@ Done in dev: extension listed, applied, route reachable at
   `` § `` colour codes written as `\u00a7` escapes.
 - M2 done: whitelist editor, Mojang lookup on online-mode servers, offline UUIDs
   otherwise, `whitelist reload` sent to a running server.
+- Adoption done: jars already on disk are hashed by wings (sha512 for Modrinth, CurseForge
+  fingerprint for CF, sha1 to name the CF file) and recorded in the manifest. Unrecognised
+  jars stay unmanaged and are listed for the user. Runs from the button, never automatically.
+- Detection fixed: `.fabric` directory and `versions/<mc>` are used as hints, because the
+  start jar is often renamed to `server.jar`. Install now refuses to run without a loader
+  and Minecraft version instead of picking whatever file is newest.
 - M3 done: Modrinth and CurseForge search, install to `/mods` or the AutoModpack
   host modpack directory with sha512 verification and atomic rename, required
   dependencies installed one level deep, pinning, single and bulk updates, and a
